@@ -307,3 +307,7 @@ if(NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
     PATTERN "CMakeLists.txt" EXCLUDE
   )
 endif()
+
+add_subdirectory(external/bps3D EXCLUDE_FROM_ALL)
+
+add_subdirectory(mjbatch)

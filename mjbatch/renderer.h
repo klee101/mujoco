@@ -11,7 +11,7 @@
 #include <string>
 #include <functional>
 #include <cstdint>
-#include <vulkan/vulkan.h>
+#include "device.h"
 
 
 // -----------------------------------------------------------------------------

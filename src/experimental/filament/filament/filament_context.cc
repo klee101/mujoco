@@ -137,6 +137,11 @@ void FilamentContext::Render(const mjrRect& viewport, const mjvScene* scene,
   }
 
   scene_view_->SetViewport(viewport);
+
+  // at this step, first remove all geoms in drawables, and then add all and update
+  // for each mjvgeom, here collect all vertex, index, and create buffer.  
+  // after, set the transform and update material for each drawable.
+  // then, update the light information.
   scene_view_->UpdateScene(con, scene);
 
   // Draw the GUI. We do this after processing the scene in case there are any

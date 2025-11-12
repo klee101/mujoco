@@ -6,7 +6,6 @@
 
 #include <mujoco/mujoco.h>
 
-#include <bps3D/backend.hpp>
 
 // select EGL, OSMESA or GLFW
 #if defined(MJ_EGL)

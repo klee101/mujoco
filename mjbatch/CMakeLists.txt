@@ -32,6 +32,7 @@ project(
 enable_language(C)
 enable_language(CXX)
 
+
 # Check if we are building as standalone project.
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
@@ -41,6 +42,10 @@ include(SampleDependencies)
 
 set(MUJOCO_SAMPLE_COMPILE_OPTIONS "${AVX_COMPILE_OPTIONS}" "${EXTRA_COMPILE_OPTIONS}")
 set(MUJOCO_SAMPLE_LINK_OPTIONS "${EXTRA_LINK_OPTIONS}")
+
+# Enable hardening options by default
+# for testing, set MUJOCO_HARDEN to OFF, ignore the unused func and variable warning
+set(MUJOCO_HARDEN OFF)
 
 if(MUJOCO_HARDEN)
   if(WIN32)
@@ -122,21 +127,30 @@ add_custom_target(generate_dispatch DEPENDS
 
 # Build renderer library.
 add_library(renderer STATIC
-  renderer.cc
-  renderer.h
-  device.h
-  device.cc
+  renderer.h           renderer.cc
+  device.h             device.cc
+  memory.h             memory.cc
+  render_context.h     render_context.cc
+  dispatch.hpp         dispatch.cpp
+  scene.h              scene.cc
+  object_manager.h     object_manager.cc
+  builtin.h            builtin.cc
+  utils.h
 )
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_include_directories(renderer PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}
 )
 target_link_libraries(renderer PUBLIC
   mujoco::mujoco
   glfw
   Threads::Threads
   Vulkan::Vulkan
+  glm
 )
+
+add_dependencies(renderer generate_dispatch)
 
 # Build samples that require GLFW.
 add_executable(record_vk record_vk.cc array_safety.h)
@@ -146,4 +160,12 @@ target_link_libraries(
   renderer
 )
 target_link_options(record_vk PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
+
+add_executable(vertex_check vertex_check.cc array_safety.h)
+target_compile_options(vertex_check PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
+target_link_libraries(
+  vertex_check
+  renderer
+)
+target_link_options(vertex_check PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
 

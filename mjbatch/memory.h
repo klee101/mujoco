@@ -6,10 +6,16 @@
 #include <optional>
 #include <deque>
 #include <mutex>
+#include <array>
 #include <string>
+#include <vulkan/vulkan_core.h>
 
 #include "dispatch.hpp"
 #include "device.h"
+
+namespace mujoco{
+namespace mjbatch {
+
 
 class MemoryAllocator;
 
@@ -285,10 +291,11 @@ private:
     const Device &dev;
     Alignments alignments_;
     VkBufferUsageFlags local_buffer_usage_flags_;
-    // std::array<VkFormat, size_t(TextureFormat::COUNT)> texture_formats_;
+    std::array<VkFormat, size_t(TextureFormat::COUNT)> texture_formats_;
     MemoryTypeIndices type_indices_;
 
     template <bool>
     friend class AllocDeleter;
 };
 
+}}

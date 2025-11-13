@@ -1,8 +1,12 @@
 #include "device.h"
+#include <utility>
 
 #include <utility>
 
+namespace mujoco {
+    namespace mjbatch {
 
+// Constructor
 Device::Device(uint32_t gfx_qf, uint32_t compute_qf, uint32_t transfer_qf,
                uint32_t num_gfx_queues, uint32_t num_compute_queues,
                uint32_t num_transfer_queues, bool rt_available,
@@ -10,8 +14,10 @@ Device::Device(uint32_t gfx_qf, uint32_t compute_qf, uint32_t transfer_qf,
                uint32_t max_viewports,
                uint32_t max_image_dim,
                float timestamp_period,
-               VkPhysicalDevice phy_dev, VkDevice dev)
+               VkPhysicalDevice phy_dev, VkDevice dev,
+               DeviceDispatch &&dispatch_table)
     : hdl(dev),
+      dt(std::move(dispatch_table)),
       phy(phy_dev),
       gfxQF(gfx_qf),
       computeQF(compute_qf),
@@ -26,8 +32,10 @@ Device::Device(uint32_t gfx_qf, uint32_t compute_qf, uint32_t transfer_qf,
       timestampPeriod(timestamp_period)
 {}
 
+// Move constructor
 Device::Device(Device &&o)
     : hdl(o.hdl),
+      dt(std::move(o.dt)),
       phy(o.phy),
       gfxQF(o.gfxQF),
       computeQF(o.computeQF),
@@ -43,8 +51,9 @@ Device::Device(Device &&o)
 Device::~Device()
 {
     if (hdl != VK_NULL_HANDLE) {
-        vkDestroyDevice(hdl, nullptr);
+        dt.destroyDevice(hdl, nullptr);
     }
 }
 
 
+    }}

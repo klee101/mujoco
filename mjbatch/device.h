@@ -1,12 +1,15 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include "dispatch.hpp"
 
-// Q: why here use the dispatch and how?
+namespace mujoco {
+    namespace mjbatch {
+
 class Device  {
 public:
     VkDevice hdl;
-    // DeviceDispatch dt;
+    DeviceDispatch dt;
     VkPhysicalDevice phy;
 
     uint32_t gfxQF;
@@ -31,10 +34,13 @@ public:
            uint32_t max_viewports,
            uint32_t max_image_dim,
            float timestamp_period,
-           VkPhysicalDevice phy_dev, VkDevice dev);
+           VkPhysicalDevice phy_dev, VkDevice dev,
+           DeviceDispatch &&dispatch_table);
 
     Device(const Device &) = delete;
     Device(Device &&o);
 
     ~Device();
 };
+
+    }}//namespace mjbatch

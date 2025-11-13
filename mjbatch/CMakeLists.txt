@@ -135,13 +135,15 @@ add_library(renderer STATIC
   scene.h              scene.cc
   object_manager.h     object_manager.cc
   builtin.h            builtin.cc
-  utils.h
+  utils.h              
+  vkutils.h            vkutils.cc
 )
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_include_directories(renderer PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}
 )
+
 target_link_libraries(renderer PUBLIC
   mujoco::mujoco
   glfw

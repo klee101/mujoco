@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <iostream>
 #include <atomic>
 #include <utility>
 #include <optional>
@@ -9,9 +10,10 @@
 #include <array>
 #include <string>
 #include <vulkan/vulkan_core.h>
-
 #include "dispatch.hpp"
 #include "device.h"
+#include "vkutils.h"
+#include "backend.h"
 
 namespace mujoco{
 namespace mjbatch {
@@ -43,7 +45,7 @@ public:
     VkDeviceMemory hdl();
 
 private:
-    VkDeviceMemory mem_;
+    mutable VkDeviceMemory mem_;
 
     MemoryAllocator *alloc_;
 };
@@ -208,7 +210,7 @@ uint32_t getTexelBytes(TextureFormat fmt);
 
 class MemoryAllocator {
 public:
-    MemoryAllocator(const Device &dev);
+    MemoryAllocator(const Device &dev,const Backend &backend);
     MemoryAllocator(const MemoryAllocator &) = delete;
     MemoryAllocator(MemoryAllocator &&) = default;
 

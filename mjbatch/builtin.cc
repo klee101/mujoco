@@ -11,595 +11,643 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#include "builtin.h"
 #include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-#include <mujoco/mjmodel.h>
-#include <mujoco/mujoco.h>
-
-#include <glm/glm.hpp>
 
 namespace mujoco {
-  namespace mjbatch{
+namespace mjbatch {
 
-using float2 = glm::vec2;
-using float3 = glm::vec3;
-using float4 = glm::vec4;
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
-static constexpr size_t kNumIndicesPerQuad = 6;
-
-// Simple vertex structure without UV coordinates
-struct VertexNoUv {
-  float3 position;
-  float4 orientation;
-  
-  VertexNoUv() : position{0, 0, 0}, orientation{0, 0, 0, 1} {}
-  VertexNoUv(float3 pos, float4 orient) : position(pos), orientation(orient) {}
-};
-
-// Calculate orientation (quaternion) from normal vector
-static float4 CalculateOrientation(float3 normal) {
-  // Normalize the normal
-  float len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-  if (len < 1e-6f) {
-    return float4{0, 0, 0, 1};
-  }
-  normal = normal / len;
-  
-  // Create a quaternion from the normal (simplified version)
-  // This assumes the normal represents the Z-axis direction
-  float3 up{0, 0, 1};
-  float3 axis = cross(up, normal);
-  float axis_len = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
-  
-  if (axis_len < 1e-6f) {
-    // Normal is parallel to up vector
-    if (normal.z > 0) {
-      return float4{0, 0, 0, 1};
-    } else {
-      return float4{1, 0, 0, 0};
+float4 GeometryBuilder::CalculateOrientation(float3 normal) {
+    float len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+    if (len < 1e-6f) {
+        return float4{0, 0, 0, 1};
     }
-  }
-  
-  axis = axis / axis_len;
-  float angle = std::acos(dot(up, normal));
-  float half_angle = angle * 0.5f;
-  float sin_half = std::sin(half_angle);
-  
-  return float4{
-    axis.x * sin_half,
-    axis.y * sin_half,
-    axis.z * sin_half,
-    std::cos(half_angle)
-  };
+    normal = normal / len;
+    
+    float3 up{0, 0, 1};
+    float3 axis = glm::cross(up, normal);
+    float axis_len = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+    
+    if (axis_len < 1e-6f) {
+        if (normal.z > 0) {
+            return float4{0, 0, 0, 1};
+        } else {
+            return float4{1, 0, 0, 0};
+        }
+    }
+    
+    axis = axis / axis_len;
+    float angle = std::acos(glm::dot(up, normal));
+    float half_angle = angle * 0.5f;
+    float sin_half = std::sin(half_angle);
+    
+    return float4{axis.x * sin_half, axis.y * sin_half, axis.z * sin_half, std::cos(half_angle)};
 }
 
-inline static int AppendQuadIndices(uint16_t* ptr, int idx, uint16_t a, uint16_t b,
-                             uint16_t c, uint16_t d) {
-  ptr[idx++] = a;
-  ptr[idx++] = b;
-  ptr[idx++] = c;
-  ptr[idx++] = a;
-  ptr[idx++] = c;
-  ptr[idx++] = d;
-  return idx;
+int GeometryBuilder::AppendQuadIndices(uint32_t* ptr, int idx, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    ptr[idx++] = a;
+    ptr[idx++] = b;
+    ptr[idx++] = c;
+    ptr[idx++] = a;
+    ptr[idx++] = c;
+    ptr[idx++] = d;
+    return idx;
 }
 
-std::size_t NumVerticesPerSide(int num_quads_per_axis) {
-  return (num_quads_per_axis + 1) * (num_quads_per_axis + 1);
+// Fixed geometry builder functions for Vulkan rendering
+// Key fixes:
+// 1. Consistent vertex winding order (CCW when viewed from outside)
+// 2. Proper normal calculations
+// 3. Correct vertex ordering in quads
+
+// Helper to append quad with proper winding (CCW from outside)
+static void AppendQuadToVector(std::vector<uint32_t>& indices, 
+                               uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    // Quad layout:
+    // a --- b
+    // |     |
+    // d --- c
+    // Triangles: (a,b,c) and (a,c,d) - CCW when viewed from front
+    indices.push_back(a);
+    indices.push_back(b);
+    indices.push_back(c);
+    indices.push_back(a);
+    indices.push_back(c);
+    indices.push_back(d);
 }
 
-std::size_t NumIndicesPerSide(int num_quads_per_axis) {
-  return kNumIndicesPerQuad * num_quads_per_axis * num_quads_per_axis;
+std::size_t GeometryBuilder::NumVerticesPerSide(int num_quads_per_axis) {
+    return (num_quads_per_axis + 1) * (num_quads_per_axis + 1);
 }
 
-// Geometry buffer structure containing raw vertex and index data
-struct GeometryBuffers {
-  std::vector<VertexNoUv> vertices;
-  std::vector<uint16_t> indices;
-};
+std::size_t GeometryBuilder::NumIndicesPerSide(int num_quads_per_axis) {
+    return kNumIndicesPerQuad * num_quads_per_axis * num_quads_per_axis;
+}
 
 // ============================================================================
-// Geometry Builders
+// Primitive Builders
 // ============================================================================
 
-class LineBuilder {
- public:
-  static GeometryBuffers Build() {
+GeometryBuffers GeometryBuilder::BuildLine() {
     GeometryBuffers result;
-    
-    constexpr float4 kOrientation = {0, 0, 0, 1};
     result.vertices = {
-      VertexNoUv({0, 0, 0}, kOrientation),
-      VertexNoUv({0, 0, 1}, kOrientation)
+        Vertex({0, 0, 0}, {0, 0, 1}, {0, 0}, {1, 1, 1, 1}),
+        Vertex({0, 0, 1}, {0, 0, 1}, {1, 0}, {1, 1, 1, 1})
     };
-    
     result.indices = {0, 1};
     return result;
-  }
-};
+}
 
-class PlaneBuilder {
- public:
-  static GeometryBuffers Build(int num_quads_per_axis) {
+// FIXED: BuildPlane with correct winding
+GeometryBuffers GeometryBuilder::BuildPlane(int num_quads_per_axis) {
     GeometryBuffers result;
-    
     const float delta = 2.0f / num_quads_per_axis;
-    const float4 orientation = CalculateOrientation({0, 0, 1});
+    const float3 normal{0, 0, 1};
     
-    // Generate vertices
-    for (int x = 0; x <= num_quads_per_axis; ++x) {
-      for (int y = 0; y <= num_quads_per_axis; ++y) {
-        const float dx = delta * static_cast<float>(x);
-        const float dy = delta * static_cast<float>(y);
-        result.vertices.push_back(VertexNoUv({dx - 1.0f, dy - 1.0f, 0}, orientation));
-      }
+    // Generate vertices in row-major order (y varies fastest)
+    for (int y = 0; y <= num_quads_per_axis; ++y) {
+        for (int x = 0; x <= num_quads_per_axis; ++x) {
+            const float dx = -1.0f + delta * static_cast<float>(x);
+            const float dy = -1.0f + delta * static_cast<float>(y);
+            result.vertices.push_back(Vertex(
+                {dx, dy, 0},
+                normal,
+                {static_cast<float>(x) / num_quads_per_axis, 
+                 static_cast<float>(y) / num_quads_per_axis},
+                {1, 1, 1, 1}
+            ));
+        }
     }
     
-    // Generate indices
-    for (int x = 0; x < num_quads_per_axis; ++x) {
-      for (int y = 0; y < num_quads_per_axis; ++y) {
-        const int base_idx = x * (num_quads_per_axis + 1) + y;
-        const int i0 = base_idx + 0;
-        const int i1 = base_idx + 1;
-        const int i2 = base_idx + num_quads_per_axis + 2;
-        const int i3 = base_idx + num_quads_per_axis + 1;
-        
-        result.indices.push_back(i0);
-        result.indices.push_back(i1);
-        result.indices.push_back(i2);
-        result.indices.push_back(i0);
-        result.indices.push_back(i2);
-        result.indices.push_back(i3);
-      }
+    // Generate indices with correct winding (CCW when viewed from +Z)
+    for (int y = 0; y < num_quads_per_axis; ++y) {
+        for (int x = 0; x < num_quads_per_axis; ++x) {
+            const int base = y * (num_quads_per_axis + 1) + x;
+            const uint32_t a = base;
+            const uint32_t b = base + 1;
+            const uint32_t c = base + (num_quads_per_axis + 1) + 1;
+            const uint32_t d = base + (num_quads_per_axis + 1);
+            AppendQuadToVector(result.indices, a, b, c, d);
+        }
     }
     
     return result;
-  }
-};
+}
 
-class LineBoxBuilder {
- public:
-  static GeometryBuffers Build() {
+GeometryBuffers GeometryBuilder::BuildLineBox() {
     GeometryBuffers result;
-    
-    constexpr float4 kOrientation = {0, 0, 0, 1};
+    const float3 normal{0, 0, 1};
     result.vertices = {
-      VertexNoUv({-1.0f, -1.0f, -1.0f}, kOrientation),
-      VertexNoUv({ 1.0f, -1.0f, -1.0f}, kOrientation),
-      VertexNoUv({-1.0f,  1.0f, -1.0f}, kOrientation),
-      VertexNoUv({ 1.0f,  1.0f, -1.0f}, kOrientation),
-      VertexNoUv({-1.0f, -1.0f,  1.0f}, kOrientation),
-      VertexNoUv({ 1.0f, -1.0f,  1.0f}, kOrientation),
-      VertexNoUv({-1.0f,  1.0f,  1.0f}, kOrientation),
-      VertexNoUv({ 1.0f,  1.0f,  1.0f}, kOrientation)
+        Vertex({-1, -1, -1}, normal, {0, 0}, {1, 1, 1, 1}),
+        Vertex({ 1, -1, -1}, normal, {1, 0}, {1, 1, 1, 1}),
+        Vertex({-1,  1, -1}, normal, {0, 1}, {1, 1, 1, 1}),
+        Vertex({ 1,  1, -1}, normal, {1, 1}, {1, 1, 1, 1}),
+        Vertex({-1, -1,  1}, normal, {0, 0}, {1, 1, 1, 1}),
+        Vertex({ 1, -1,  1}, normal, {1, 0}, {1, 1, 1, 1}),
+        Vertex({-1,  1,  1}, normal, {0, 1}, {1, 1, 1, 1}),
+        Vertex({ 1,  1,  1}, normal, {1, 1}, {1, 1, 1, 1})
     };
-    
     result.indices = {
-      0, 1,  1, 3,  3, 2,  2, 0,  // Bottom square
-      4, 5,  5, 7,  7, 6,  6, 4,  // Top square
-      2, 6,  3, 7,  0, 4,  1, 5   // Connecting edges
+        0, 1,  1, 3,  3, 2,  2, 0,  // Bottom
+        4, 5,  5, 7,  7, 6,  6, 4,  // Top
+        2, 6,  3, 7,  0, 4,  1, 5   // Edges
     };
-    
     return result;
-  }
-};
+}
 
-class BoxBuilder {
- public:
-  static GeometryBuffers Build(int num_quads_per_axis) {
+// FIXED: BuildBox with correct vertex ordering
+GeometryBuffers GeometryBuilder::BuildBox(int num_quads_per_axis) {
     GeometryBuffers result;
-    
     const float quad_size = 2.0f / static_cast<float>(num_quads_per_axis);
     const int vertices_per_side = NumVerticesPerSide(num_quads_per_axis);
     
-    // Generate vertices for all 6 sides
-    auto generate_side = [&](float3 normal, auto pt_gen) {
-      float4 orientation = CalculateOrientation(normal);
-      for (int x = 0; x <= num_quads_per_axis; ++x) {
+    // Generate 6 sides with correct normals pointing OUTWARD
+    auto generate_side = [&](float3 normal, auto pos_gen) {
         for (int y = 0; y <= num_quads_per_axis; ++y) {
-          const float dx = -1.0f + (quad_size * static_cast<float>(x));
-          const float dy = -1.0f + (quad_size * static_cast<float>(y));
-          const float3 position = pt_gen(float2{dx, dy});
-          result.vertices.push_back(VertexNoUv(position, orientation));
+            for (int x = 0; x <= num_quads_per_axis; ++x) {
+                const float dx = -1.0f + (quad_size * static_cast<float>(x));
+                const float dy = -1.0f + (quad_size * static_cast<float>(y));
+                const float3 pos = pos_gen(float2{dx, dy});
+                result.vertices.push_back(Vertex(
+                    pos, normal, 
+                    {static_cast<float>(x) / num_quads_per_axis, 
+                     static_cast<float>(y) / num_quads_per_axis}, 
+                    {1, 1, 1, 1}
+                ));
+            }
         }
-      }
     };
     
+    // +Y face (right) - looking at +Y direction
     generate_side({0, 1, 0}, [](float2 pt) { return float3{pt.x, 1.0f, pt.y}; });
-    generate_side({0, -1, 0}, [](float2 pt) { return float3{pt.x, -1.0f, pt.y}; });
-    generate_side({1, 0, 0}, [](float2 pt) { return float3{1.0f, pt.x, pt.y}; });
+    // -Y face (left) - looking at -Y direction  
+    generate_side({0, -1, 0}, [](float2 pt) { return float3{-pt.x, -1.0f, pt.y}; });
+    // +X face (front) - looking at +X direction
+    generate_side({1, 0, 0}, [](float2 pt) { return float3{1.0f, -pt.x, pt.y}; });
+    // -X face (back) - looking at -X direction
     generate_side({-1, 0, 0}, [](float2 pt) { return float3{-1.0f, pt.x, pt.y}; });
+    // +Z face (top) - looking down at +Z
     generate_side({0, 0, 1}, [](float2 pt) { return float3{pt.x, pt.y, 1.0f}; });
-    generate_side({0, 0, -1}, [](float2 pt) { return float3{pt.x, pt.y, -1.0f}; });
+    // -Z face (bottom) - looking up at -Z
+    generate_side({0, 0, -1}, [](float2 pt) { return float3{pt.x, -pt.y, -1.0f}; });
     
-    // Generate indices for all 6 sides
+    // Generate indices for all sides with proper winding
     for (int side = 0; side < 6; ++side) {
-      for (int x = 0; x < num_quads_per_axis; ++x) {
+        const int base_offset = side * vertices_per_side;
         for (int y = 0; y < num_quads_per_axis; ++y) {
-          const int base_idx = (side * vertices_per_side) + (x * (num_quads_per_axis + 1)) + y;
-          const int i0 = base_idx + 0;
-          const int i1 = base_idx + 1;
-          const int i2 = base_idx + num_quads_per_axis + 2;
-          const int i3 = base_idx + num_quads_per_axis + 1;
-          
-          result.indices.push_back(i0);
-          result.indices.push_back(i1);
-          result.indices.push_back(i2);
-          result.indices.push_back(i0);
-          result.indices.push_back(i2);
-          result.indices.push_back(i3);
+            for (int x = 0; x < num_quads_per_axis; ++x) {
+                const int base = base_offset + (y * (num_quads_per_axis + 1)) + x;
+                // Vertices are laid out in rows, left to right, bottom to top
+                const uint32_t a = base;
+                const uint32_t b = base + 1;
+                const uint32_t c = base + (num_quads_per_axis + 1) + 1;
+                const uint32_t d = base + (num_quads_per_axis + 1);
+                AppendQuadToVector(result.indices, a, b, c, d);
+            }
         }
-      }
     }
     
     return result;
-  }
-};
+}
 
-class SphereBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices) {
+// FIXED: BuildSphere with consistent winding
+GeometryBuffers GeometryBuilder::BuildSphere(int num_stacks, int num_slices) {
     GeometryBuffers result;
+    const float lat_delta = M_PI / static_cast<float>(num_stacks + 1);
+    const float lon_delta = 2.0f * M_PI / static_cast<float>(num_slices);
     
-    const float lat_angle_delta = M_PI / static_cast<float>(num_stacks + 1);
-    const float lon_angle_delta = 2.0 * M_PI / static_cast<float>(num_slices);
+    // Top pole (0,0,1)
+    result.vertices.push_back(Vertex({0, 0, 1}, {0, 0, 1}, {0.5f, 0}, {1, 1, 1, 1}));
     
-    auto make_vert = [](float x, float y, float z) {
-      const float3 pt{x, y, z};
-      return VertexNoUv(pt, CalculateOrientation(pt));
-    };
-    
-    // Add poles
-    result.vertices.push_back(make_vert(0, 0, 1));   // North pole (index 0)
-    result.vertices.push_back(make_vert(0, 0, -1));  // South pole (index 1)
-    
-    // Generate vertices by latitude
+    // Generate vertices from top to bottom
     for (int lat = 0; lat < num_stacks; ++lat) {
-      const float lat_angle = static_cast<float>(lat + 1) * lat_angle_delta;
-      const float cos_lat = std::cos(lat_angle);
-      const float sin_lat = std::sin(lat_angle);
-      const float z = cos_lat;
-      
-      for (int lon = 0; lon < num_slices; ++lon) {
-        const float lon_angle = static_cast<float>(lon) * lon_angle_delta;
-        const float x = sin_lat * std::cos(lon_angle);
-        const float y = sin_lat * std::sin(lon_angle);
-        result.vertices.push_back(make_vert(x, y, z));
-      }
+        const float lat_angle = static_cast<float>(lat + 1) * lat_delta;
+        const float cos_lat = std::cos(lat_angle);
+        const float sin_lat = std::sin(lat_angle);
+        
+        for (int lon = 0; lon < num_slices; ++lon) {
+            const float lon_angle = static_cast<float>(lon) * lon_delta;
+            const float x = sin_lat * std::cos(lon_angle);
+            const float y = sin_lat * std::sin(lon_angle);
+            const float z = cos_lat;
+            float3 normal{x, y, z};
+            result.vertices.push_back(Vertex(
+                normal, normal,
+                {static_cast<float>(lon) / num_slices, 
+                 static_cast<float>(lat + 1) / (num_stacks + 1)},
+                {1, 1, 1, 1}
+            ));
+        }
     }
     
-    // Generate indices
-    uint16_t row_start = 2;  // First row starts after the two poles
+    // Bottom pole (0,0,-1)
+    result.vertices.push_back(Vertex({0, 0, -1}, {0, 0, -1}, {0.5f, 1}, {1, 1, 1, 1}));
     
-    // North polar cap
+    // Top cap triangles (connecting to north pole)
+    const uint32_t first_ring = 1;
     for (int lon = 0; lon < num_slices; ++lon) {
-      const int next = lon < (num_slices - 1) ? lon + 1 : 0;
-      result.indices.push_back(0);  // North pole
-      result.indices.push_back(row_start + next);
-      result.indices.push_back(row_start + lon);
+        const int next = (lon + 1) % num_slices;
+        result.indices.push_back(0);
+        result.indices.push_back(first_ring + lon);
+        result.indices.push_back(first_ring + next);
     }
     
-    // Latitudinal triangle strips
+    // Middle quads
     for (int lat = 0; lat < num_stacks - 1; ++lat) {
-      const uint16_t north_start = row_start;
-      const uint16_t south_start = row_start + num_slices;
-      
-      for (int lon = 0; lon < num_slices; ++lon) {
-        const int adjacent = lon < (num_slices - 1) ? lon + 1 : 0;
+        const uint32_t current_ring = 1 + lat * num_slices;
+        const uint32_t next_ring = current_ring + num_slices;
         
-        result.indices.push_back(north_start + lon);
-        result.indices.push_back(south_start + lon);
-        result.indices.push_back(south_start + adjacent);
-        result.indices.push_back(north_start + lon);
-        result.indices.push_back(south_start + adjacent);
-        result.indices.push_back(north_start + adjacent);
-      }
-      row_start += num_slices;
+        for (int lon = 0; lon < num_slices; ++lon) {
+            const int next = (lon + 1) % num_slices;
+            const uint32_t a = current_ring + lon;
+            const uint32_t b = current_ring + next;
+            const uint32_t c = next_ring + next;
+            const uint32_t d = next_ring + lon;
+            AppendQuadToVector(result.indices, a, b, c, d);
+        }
     }
     
-    // South polar cap
+    // Bottom cap triangles (connecting to south pole)
+    const uint32_t last_ring = 1 + (num_stacks - 1) * num_slices;
+    const uint32_t south_pole = 1 + num_stacks * num_slices;
     for (int lon = 0; lon < num_slices; ++lon) {
-      const int adjacent = lon < (num_slices - 1) ? lon + 1 : 0;
-      result.indices.push_back(1);  // South pole
-      result.indices.push_back(row_start + lon);
-      result.indices.push_back(row_start + adjacent);
+        const int next = (lon + 1) % num_slices;
+        result.indices.push_back(south_pole);
+        result.indices.push_back(last_ring + next);
+        result.indices.push_back(last_ring + lon);
     }
     
     return result;
-  }
-};
+}
 
-class TubeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices) {
+GeometryBuffers GeometryBuilder::BuildCone(int num_stacks, int num_slices) {
     GeometryBuffers result;
-    
-    const float delta_angle = 2.f * M_PI / static_cast<float>(num_slices);
-    const float delta_stack = 2.f / static_cast<float>(num_stacks);
-    
-    // Generate vertices
-    for (int i = 0; i < num_slices; ++i) {
-      const float angle = static_cast<float>(i) * delta_angle;
-      const float2 pt{std::cos(angle), std::sin(angle)};
-      const float4 orientation = CalculateOrientation({pt.x, pt.y, 0});
-      
-      for (int j = 0; j <= num_stacks; ++j) {
-        const float z = -1.0f + (static_cast<float>(j) * delta_stack);
-        result.vertices.push_back(VertexNoUv({pt.x, pt.y, z}, orientation));
-      }
-    }
-    
-    // Generate indices
-    const int num_vertices = result.vertices.size();
-    const int num_vertices_in_spine = num_stacks + 1;
-    
-    for (int i = 0; i < num_slices; ++i) {
-      for (int j = 0; j < num_stacks; ++j) {
-        const int base_idx = (i * num_vertices_in_spine) + j;
-        const int i0 = base_idx + 0;
-        const int i1 = base_idx + 1;
-        const int i2 = (base_idx + num_stacks + 2) % num_vertices;
-        const int i3 = (base_idx + num_stacks + 1) % num_vertices;
-        
-        result.indices.push_back(i0);
-        result.indices.push_back(i1);
-        result.indices.push_back(i2);
-        result.indices.push_back(i0);
-        result.indices.push_back(i2);
-        result.indices.push_back(i3);
-      }
-    }
-    
-    return result;
-  }
-};
-
-class DiskBuilder {
- public:
-  static GeometryBuffers Build(int num_slices) {
-    GeometryBuffers result;
-    
-    const float delta_angle = 2.0 * M_PI / static_cast<float>(num_slices);
-    const float4 orientation = CalculateOrientation({0, 0, 1});
-    
-    // Center vertex
-    result.vertices.push_back(VertexNoUv(float3{0, 0, 0}, orientation));
-    
-    // Perimeter vertices
-    for (int i = 0; i < num_slices; ++i) {
-      const float angle = static_cast<float>(i) * delta_angle;
-      const float x = std::cos(angle);
-      const float y = std::sin(angle);
-      result.vertices.push_back(VertexNoUv(float3{x, y, 0}, orientation));
-    }
-    
-    // Generate indices
-    for (int i = 0; i < num_slices; ++i) {
-      const int next = i < (num_slices - 1) ? i + 1 : 0;
-      result.indices.push_back(0);
-      result.indices.push_back(1 + i);
-      result.indices.push_back(1 + next);
-    }
-    
-    return result;
-  }
-};
-
-class DomeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices) {
-    GeometryBuffers result;
-    
-    const float lat_angle_delta = 0.5 * M_PI / static_cast<float>(num_stacks);
-    const float lon_angle_delta = 2.0 * M_PI / static_cast<float>(num_slices);
-    
-    auto make_vert = [](float x, float y, float z) {
-      const float3 pt{x, y, z};
-      return VertexNoUv(pt, CalculateOrientation(pt));
-    };
-    
-    // Add pole
-    result.vertices.push_back(make_vert(0, 0, 1));
-    
-    // Generate vertices by latitude
-    for (int lat = 0; lat < num_stacks; ++lat) {
-      const float lat_angle = static_cast<float>(lat + 1) * lat_angle_delta;
-      const float cos_lat = std::cos(lat_angle);
-      const float sin_lat = std::sin(lat_angle);
-      const float z = cos_lat;
-      
-      for (int lon = 0; lon < num_slices; ++lon) {
-        const float lon_angle = static_cast<float>(lon) * lon_angle_delta;
-        const float x = sin_lat * std::cos(lon_angle);
-        const float y = sin_lat * std::sin(lon_angle);
-        result.vertices.push_back(make_vert(x, y, z));
-      }
-    }
-    
-    // Generate indices
-    uint16_t row_start = 1;
-    
-    // Polar cap
-    for (int lon = 0; lon < num_slices; ++lon) {
-      const int next = lon < (num_slices - 1) ? lon + 1 : 0;
-      result.indices.push_back(0);
-      result.indices.push_back(row_start + next);
-      result.indices.push_back(row_start + lon);
-    }
-    
-    // Latitudinal quad strips
-    for (int lat = 0; lat < num_stacks - 1; ++lat) {
-      const int north_start = row_start;
-      const int south_start = row_start + num_slices;
-      
-      for (int lon = 0; lon < num_slices; ++lon) {
-        const int adjacent = lon < (num_slices - 1) ? lon + 1 : 0;
-        
-        result.indices.push_back(north_start + lon);
-        result.indices.push_back(south_start + lon);
-        result.indices.push_back(south_start + adjacent);
-        result.indices.push_back(north_start + lon);
-        result.indices.push_back(south_start + adjacent);
-        result.indices.push_back(north_start + adjacent);
-      }
-      row_start += num_slices;
-    }
-    
-    return result;
-  }
-};
-
-class ConeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices) {
-    GeometryBuffers result;
-    
-    const float delta_angle = 2.0 * M_PI / static_cast<float>(num_slices);
+    const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
     const float delta_radius = 1.0f / static_cast<float>(num_stacks);
     
-    auto make_vert = [](float theta, float radius) -> VertexNoUv {
-      static constexpr float kNormalScale = 0.70710678118f;
-      const float cz = std::cos(theta);
-      const float sz = std::sin(theta);
-      const float3 pt{cz * radius, sz * radius, 1.f - radius};
-      const float3 n{cz * kNormalScale, sz * kNormalScale, kNormalScale};
-      return VertexNoUv(pt, CalculateOrientation(n));
-    };
-    
-    // Pole: use triangles
-    for (int j = 0; j < num_slices; ++j) {
-      const float angle1 = static_cast<float>(j) * delta_angle;
-      const float angle2 = static_cast<float>(j + 1) * delta_angle;
-      
-      result.vertices.push_back(make_vert(angle1, delta_radius));
-      result.vertices.push_back(make_vert(angle2, delta_radius));
-      
-      VertexNoUv v3;
-      v3.position = {0, 0, 1};
-      v3.orientation = CalculateOrientation(v3.position);
-      result.vertices.push_back(v3);
-    }
-    
-    // The rest: use quads
-    for (int i = 1; i < num_stacks; ++i) {
-      const float radius1 = delta_radius * static_cast<float>(i);
-      const float radius2 = delta_radius * static_cast<float>(i + 1);
-      
-      for (int j = 0; j < num_slices; ++j) {
-        const float angle1 = static_cast<float>(j) * delta_angle;
-        const float angle2 = static_cast<float>(j + 1) * delta_angle;
-        
-        result.vertices.push_back(make_vert(angle1, radius2));
-        result.vertices.push_back(make_vert(angle2, radius2));
-        result.vertices.push_back(make_vert(angle2, radius1));
-        result.vertices.push_back(make_vert(angle1, radius1));
-      }
+    // Generate vertices
+    for (int i = 0; i <= num_stacks; ++i) {
+        const float radius = 1.0f - (delta_radius * static_cast<float>(i));
+        for (int j = 0; j < num_slices; ++j) {
+            const float angle = static_cast<float>(j) * delta_angle;
+            const float x = std::cos(angle) * radius;
+            const float y = std::sin(angle) * radius;
+            const float z = static_cast<float>(i) * delta_radius;
+            float3 pos{x, y, z};
+            float3 normal = glm::normalize(float3{x, y, 0.5f});
+            result.vertices.push_back(Vertex(
+                pos, normal,
+                {static_cast<float>(j) / num_slices, static_cast<float>(i) / num_stacks},
+                {1, 1, 1, 1}
+            ));
+        }
     }
     
     // Generate indices
-    // Triangle indices for pole
-    for (int j = 0; j < num_slices * 3; ++j) {
-      result.indices.push_back(j);
-    }
-    
-    // Quad indices for body
-    int quad_idx = num_slices * 3;
-    for (int i = 1; i < num_stacks; ++i) {
-      for (int j = 0; j < num_slices; ++j) {
-        result.indices.push_back(quad_idx + 0);
-        result.indices.push_back(quad_idx + 1);
-        result.indices.push_back(quad_idx + 2);
-        result.indices.push_back(quad_idx + 0);
-        result.indices.push_back(quad_idx + 2);
-        result.indices.push_back(quad_idx + 3);
-        quad_idx += 4;
-      }
+    for (int i = 0; i < num_stacks; ++i) {
+        for (int j = 0; j < num_slices; ++j) {
+            const int base = i * num_slices + j;
+            const int next_j = (j + 1) % num_slices;
+            const int next_base = base + num_slices;
+            AppendQuadToVector(result.indices,
+                base, base + next_j, next_base + next_j, next_base);        }
     }
     
     return result;
-  }
-};
-
-// ============================================================================
-// Public API Functions
-// ============================================================================
-
-GeometryBuffers CreateGeometryFromType(int geom_type, const mjModel* model) {
-  const int num_quads = model->vis.quality.numquads;
-  const int num_stacks = model->vis.quality.numstacks;
-  const int num_slices = model->vis.quality.numslices;
-  
-  switch (geom_type) {
-    case mjGEOM_PLANE:
-      return PlaneBuilder::Build(num_quads);
-    case mjGEOM_SPHERE:
-    case mjGEOM_ELLIPSOID:
-      return SphereBuilder::Build(num_stacks, num_slices);
-    case mjGEOM_BOX:
-      return BoxBuilder::Build(num_quads);
-    case mjGEOM_CAPSULE:
-      // For capsule, return tube (caller should also create two domes)
-      return TubeBuilder::Build(num_stacks, num_slices);
-    case mjGEOM_CYLINDER:
-      // For cylinder, return tube (caller should also create two disks)
-      return TubeBuilder::Build(num_stacks, num_slices);
-    case mjGEOM_LINE:
-      return LineBuilder::Build();
-    case mjGEOM_LINEBOX:
-      return LineBoxBuilder::Build();
-    default:
-      return GeometryBuffers();
-  }
 }
 
-// Helper functions for composite geometries
-GeometryBuffers CreateLine(const mjModel* model) {
-  return LineBuilder::Build();
-}
-
-GeometryBuffers CreatePlane(const mjModel* model) {
-  const int num_quads = model->vis.quality.numquads;
-  return PlaneBuilder::Build(num_quads);
-}
-
-GeometryBuffers CreateLineBox(const mjModel* model) {
-  return LineBoxBuilder::Build();
-}
-
-GeometryBuffers CreateBox(const mjModel* model) {
-  const int num_quads = model->vis.quality.numquads;
-  return BoxBuilder::Build(num_quads);
-}
-GeometryBuffers CreateSphere(const mjModel* model) {
-  const int num_stacks = model->vis.quality.numstacks;
-  const int num_slices = model->vis.quality.numslices;
-  return SphereBuilder::Build(num_stacks, num_slices);
-}
-
-GeometryBuffers CreateDome(const mjModel* model) {
-  const int num_stacks = model->vis.quality.numstacks / 2;
-  const int num_slices = model->vis.quality.numslices;
-  return DomeBuilder::Build(num_stacks, num_slices);
-}
-
-GeometryBuffers CreateDisk(const mjModel* model) {
-  const int num_slices = model->vis.quality.numslices;
-  return DiskBuilder::Build(num_slices);
-}
-
-GeometryBuffers CreateCone(const mjModel* model) {
-  const int num_stacks = model->vis.quality.numstacks;
-  const int num_slices = model->vis.quality.numslices;
-  return ConeBuilder::Build(num_stacks, num_slices);
-}
-
-GeometryBuffers CreateTube(const mjModel* model) {
-  const int num_stacks = model->vis.quality.numstacks;
-  const int num_slices = model->vis.quality.numslices;
-  return TubeBuilder::Build(num_stacks, num_slices);
-}
-  }
+GeometryBuffers GeometryBuilder::BuildDisk(int num_slices) {
+    GeometryBuffers result;
+    const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
+    const float3 normal{0, 0, 1};
+    
+    result.vertices.push_back(Vertex({0, 0, 0}, normal, {0.5f, 0.5f}, {1, 1, 1, 1}));
+    
+    for (int i = 0; i < num_slices; ++i) {
+        const float angle = static_cast<float>(i) * delta_angle;
+        const float x = std::cos(angle);
+        const float y = std::sin(angle);
+        result.vertices.push_back(Vertex(
+            {x, y, 0}, normal,
+            {x * 0.5f + 0.5f, y * 0.5f + 0.5f},
+            {1, 1, 1, 1}
+        ));
     }
+    
+    for (int i = 0; i < num_slices; ++i) {
+        const int next = (i + 1) % num_slices;
+        result.indices.push_back(0);
+        result.indices.push_back(1 + i);
+        result.indices.push_back(1 + next);
+    }
+    
+    return result;
+}
+
+GeometryBuffers GeometryBuilder::BuildDome(int num_stacks, int num_slices) {
+    GeometryBuffers result;
+    const float lat_delta = 0.5f * M_PI / static_cast<float>(num_stacks);
+    const float lon_delta = 2.0f * M_PI / static_cast<float>(num_slices);
+    
+    result.vertices.push_back(Vertex({0, 0, 1}, {0, 0, 1}, {0.5f, 0}, {1, 1, 1, 1}));
+    
+    for (int lat = 0; lat < num_stacks; ++lat) {
+        const float lat_angle = static_cast<float>(lat + 1) * lat_delta;
+        const float cos_lat = std::cos(lat_angle);
+        const float sin_lat = std::sin(lat_angle);
+        
+        for (int lon = 0; lon < num_slices; ++lon) {
+            const float lon_angle = static_cast<float>(lon) * lon_delta;
+            const float x = sin_lat * std::cos(lon_angle);
+            const float y = sin_lat * std::sin(lon_angle);
+            const float z = cos_lat;
+            float3 normal{x, y, z};
+            result.vertices.push_back(Vertex(
+                normal, normal,
+                {static_cast<float>(lon) / num_slices, static_cast<float>(lat + 1) / num_stacks},
+                {1, 1, 1, 1}
+            ));
+        }
+    }
+    
+    uint32_t row_start = 1;
+    for (int lon = 0; lon < num_slices; ++lon) {
+        const int next = (lon + 1) % num_slices;
+        result.indices.push_back(0);
+        result.indices.push_back(row_start + next);
+        result.indices.push_back(row_start + lon);
+    }
+    
+    for (int lat = 0; lat < num_stacks - 1; ++lat) {
+        const uint32_t north = row_start;
+        const uint32_t south = row_start + num_slices;
+        for (int lon = 0; lon < num_slices; ++lon) {
+            const int next = (lon + 1) % num_slices;
+            AppendQuadToVector(result.indices,
+                            north + lon, south + lon, south + next, north + next);
+        }
+        row_start += num_slices;
+    }
+    
+    return result;
+}
+
+GeometryBuffers GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
+    GeometryBuffers result;
+    const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
+    const float delta_z = 2.0f / static_cast<float>(num_stacks);
+    
+    for (int i = 0; i < num_slices; ++i) {
+        const float angle = static_cast<float>(i) * delta_angle;
+        const float3 normal{std::cos(angle), std::sin(angle), 0};
+        
+        for (int j = 0; j <= num_stacks; ++j) {
+            const float z = -1.0f + (static_cast<float>(j) * delta_z);
+            const float3 pos{normal.x, normal.y, z};
+            result.vertices.push_back(Vertex(
+                pos, normal,
+                {static_cast<float>(i) / num_slices, static_cast<float>(j) / num_stacks},
+                {1, 1, 1, 1}
+            ));
+        }
+    }
+    
+    for (int i = 0; i < num_slices; ++i) {
+        for (int j = 0; j < num_stacks; ++j) {
+            const int base = i * (num_stacks + 1) + j;
+            const int next_i = (i + 1) % num_slices;
+            const int next_base = next_i * (num_stacks + 1) + j;
+            AppendQuadToVector(result.indices,
+                base, next_base, next_base + 1, base + 1);        }
+    }
+    
+    return result;
+}
+
+// ============================================================================
+// Composite Geometry Builders
+// ============================================================================
+
+// Build capsule: tube + 2 domes
+GeometryBuffers GeometryBuilder::BuildCapsule(int num_stacks, int num_slices) {
+    GeometryBuffers result;
+    
+    // Build tube (middle part) - add first
+    GeometryBuffers tube = BuildTube(num_stacks, num_slices);
+    for (const auto& v : tube.vertices) {
+        result.vertices.push_back(v);
+    }
+    for (uint32_t idx : tube.indices) {
+        result.indices.push_back(idx);
+    }
+    
+    // Build top dome
+    GeometryBuffers top_dome = BuildDome(num_stacks / 2, num_slices);
+    uint32_t top_vertex_offset = static_cast<uint32_t>(tube.vertices.size());
+    for (auto& v : top_dome.vertices) {
+        v.position.z += 1.0f;  // Translate up
+        result.vertices.push_back(v);
+    }
+    // Add top dome indices with offset
+    for (uint32_t idx : top_dome.indices) {
+        result.indices.push_back(top_vertex_offset + idx);
+    }
+    
+    // Build bottom dome (flipped)
+    GeometryBuffers bottom_dome = BuildDome(num_stacks / 2, num_slices);
+    uint32_t bottom_vertex_offset = static_cast<uint32_t>(tube.vertices.size() + top_dome.vertices.size());
+    for (auto& v : bottom_dome.vertices) {
+        v.position.z -= 1.0f;  // Translate down
+        v.position.z = -v.position.z;  // Flip
+        v.normal.z = -v.normal.z;  // Flip normal
+        result.vertices.push_back(v);
+    }
+    // Add bottom dome indices with offset (reverse winding for flip)
+    for (size_t i = 0; i < bottom_dome.indices.size(); i += 3) {
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 0]);
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 2]);
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 1]);
+    }
+    
+    return result;
+}
+
+// FIXED: BuildCylinder with proper disk orientation
+GeometryBuffers GeometryBuilder::BuildCylinder(int num_stacks, int num_slices) {
+    GeometryBuffers result;
+    
+    // Build tube
+    GeometryBuffers tube = BuildTube(num_stacks, num_slices);
+    for (const auto& v : tube.vertices) {
+        result.vertices.push_back(v);
+    }
+    for (uint32_t idx : tube.indices) {
+        result.indices.push_back(idx);
+    }
+    
+    // Top disk (+Z face, normal pointing up)
+    GeometryBuffers top_disk = BuildDisk(num_slices);
+    uint32_t top_offset = static_cast<uint32_t>(result.vertices.size());
+    for (auto& v : top_disk.vertices) {
+        v.position.z = 1.0f;
+        result.vertices.push_back(v);
+    }
+    for (uint32_t idx : top_disk.indices) {
+        result.indices.push_back(top_offset + idx);
+    }
+    
+    // Bottom disk (-Z face, normal pointing down, reversed winding)
+    GeometryBuffers bottom_disk = BuildDisk(num_slices);
+    uint32_t bottom_offset = static_cast<uint32_t>(result.vertices.size());
+    for (auto& v : bottom_disk.vertices) {
+        v.position.z = -1.0f;
+        v.normal.z = -1.0f;  // Normal points down
+        result.vertices.push_back(v);
+    }
+    // Reverse winding for bottom face
+    for (size_t i = 0; i < bottom_disk.indices.size(); i += 3) {
+        result.indices.push_back(bottom_offset + bottom_disk.indices[i]);
+        result.indices.push_back(bottom_offset + bottom_disk.indices[i + 2]);
+        result.indices.push_back(bottom_offset + bottom_disk.indices[i + 1]);
+    }
+    
+    return result;
+}
+
+// Build ellipsoid: sphere with non-uniform scaling (handled by transform, but we build unit sphere)
+GeometryBuffers GeometryBuilder::BuildEllipsoid(int num_stacks, int num_slices) {
+    // Ellipsoid is just a sphere - scaling is applied via transform matrix
+    return BuildSphere(num_stacks, num_slices);
+}
+
+GeometryBuffers GeometryBuilder::BuildFromType(int geom_type, const mjModel* model) {
+    const int num_quads = model->vis.quality.numquads;
+    const int num_stacks = model->vis.quality.numstacks;
+    const int num_slices = model->vis.quality.numslices;
+    
+    switch (geom_type) {
+        case mjGEOM_PLANE:
+            return GeometryBuilder::BuildPlane(num_quads);
+        case mjGEOM_SPHERE:
+            return GeometryBuilder::BuildSphere(num_stacks, num_slices);
+        case mjGEOM_ELLIPSOID:
+            return GeometryBuilder::BuildEllipsoid(num_stacks, num_slices);
+        case mjGEOM_BOX:
+            return GeometryBuilder::BuildBox(num_quads);
+        case mjGEOM_CYLINDER:
+            return GeometryBuilder::BuildCylinder(num_stacks, num_slices);
+        case mjGEOM_CAPSULE:
+            return GeometryBuilder::BuildCapsule(num_stacks, num_slices);
+        case mjGEOM_LINE:
+            return GeometryBuilder::BuildLine();
+        case mjGEOM_LINEBOX:
+            return GeometryBuilder::BuildLineBox();
+        default:
+            return GeometryBuffers();
+    }
+}
+
+GeometryBuffers GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
+    GeometryBuffers result;
+    
+    if (mesh_id < 0 || mesh_id >= model->nmesh) {
+        return result;
+    }
+    
+    // Get mesh addresses
+    int vertadr = model->mesh_vertadr[mesh_id];
+    int vertnum = model->mesh_vertnum[mesh_id];
+    int normaladr = model->mesh_normaladr[mesh_id];
+    int normalnum = model->mesh_normalnum[mesh_id];
+    int faceadr = model->mesh_faceadr[mesh_id];
+    int facenum = model->mesh_facenum[mesh_id];
+    int texcoordadr = model->mesh_texcoordadr[mesh_id];
+    bool has_texcoord = (texcoordadr >= 0);
+    
+    // Extract vertices
+    for (int i = 0; i < vertnum; ++i) {
+        const float* vert = model->mesh_vert + 3 * (vertadr + i);
+        float3 pos{vert[0], vert[1], vert[2]};
+        
+        // Get normal (may have different count than vertices)
+        float3 norm{0, 0, 1};
+        if (i < normalnum) {
+            const float* normal = model->mesh_normal + 3 * (normaladr + i);
+            norm = float3{normal[0], normal[1], normal[2]};
+        }
+        
+        // Get texture coordinates
+        float2 uv{0, 0};
+        if (has_texcoord && i < model->mesh_texcoordnum[mesh_id]) {
+            const float* texcoord = model->mesh_texcoord + 2 * (texcoordadr + i);
+            uv = float2{texcoord[0], texcoord[1]};
+        }
+        
+        result.vertices.push_back(Vertex(pos, norm, uv, {1, 1, 1, 1}));
+    }
+    
+    // Extract indices from faces
+    for (int i = 0; i < facenum; ++i) {
+        const int* face = model->mesh_face + 3 * (faceadr + i);
+        // MuJoCo mesh faces are relative to mesh vertex start, so we need to offset
+        result.indices.push_back(static_cast<uint32_t>(face[0]));
+        result.indices.push_back(static_cast<uint32_t>(face[1]));
+        result.indices.push_back(static_cast<uint32_t>(face[2]));
+    }
+    
+    return result;
+}
+
+GeometryBuffers GeometryBuilder::BuildHeightField(const mjModel* model, int hfield_id) {
+    GeometryBuffers result;
+    
+    if (hfield_id < 0 || hfield_id >= model->nhfield) {
+        return result;
+    }
+    
+    const int nrow = model->hfield_nrow[hfield_id];
+    const int ncol = model->hfield_ncol[hfield_id];
+    const int dataadr = model->hfield_adr[hfield_id];
+    const float* data = model->hfield_data + dataadr;
+    
+    // Generate vertices
+    for (int row = 0; row < nrow; ++row) {
+        for (int col = 0; col < ncol; ++col) {
+            const float x = static_cast<float>(col) / (ncol - 1) * 2.0f - 1.0f;
+            const float y = static_cast<float>(row) / (nrow - 1) * 2.0f - 1.0f;
+            const float z = data[row * ncol + col];
+            
+            // Calculate normal (simplified)
+            float3 normal{0, 0, 1};
+            if (row > 0 && row < nrow - 1 && col > 0 && col < ncol - 1) {
+                const float dzdx = (data[row * ncol + col + 1] - data[row * ncol + col - 1]) * 0.5f;
+                const float dzdy = (data[(row + 1) * ncol + col] - data[(row - 1) * ncol + col]) * 0.5f;
+                normal = glm::normalize(float3{-dzdx, -dzdy, 1.0f});
+            }
+            
+            result.vertices.push_back(Vertex(
+                {x, y, z}, normal,
+                {static_cast<float>(col) / (ncol - 1), static_cast<float>(row) / (nrow - 1)},
+                {1, 1, 1, 1}
+            ));
+        }
+    }
+    
+    // Generate indices
+    for (int row = 0; row < nrow - 1; ++row) {
+        for (int col = 0; col < ncol - 1; ++col) {
+            const int base = row * ncol + col;
+            AppendQuadToVector(result.indices,
+                            base, base + 1, base + ncol + 1, base + ncol);
+        }
+    }
+    
+    return result;
+}
+
+}} // namespace mujoco::mjbatch

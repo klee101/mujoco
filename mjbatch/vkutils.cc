@@ -5,6 +5,32 @@
 
 namespace mujoco {
 namespace mjbatch {
+
+void fatal(const char *file, int line, const char *funcname,
+                           const char *fmt, ...)
+{
+    static std::array<char, 4096> buffer;
+    
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer.data(), buffer.size(), fmt, args);
+    va_end(args);
+    
+    fatal(CrashInfo{file, line, funcname, buffer.data()});
+}
+
+void fatal(const CrashInfo &crash)
+{
+    fprintf(stderr, "Error at %s:%d in %s\n", crash.file, crash.line,
+            crash.funcname);
+    if (crash.msg) {
+        fprintf(stderr, "%s\n", crash.msg);
+    }
+    
+    fflush(stderr);
+    abort();
+}
+
 void GPURunUtil::begin(const Device &dev) const
 {
     VkCommandBufferBeginInfo begin_info {};
@@ -122,5 +148,6 @@ void printVkError(VkResult res, const char *msg)
     }
     std::cerr << std::endl;
 }
+
 
 }}

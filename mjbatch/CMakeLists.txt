@@ -128,15 +128,16 @@ add_custom_target(generate_dispatch DEPENDS
 # Build renderer library.
 add_library(renderer STATIC
   renderer.h           renderer.cc
+  render_context.h     render_context.cc
   device.h             device.cc
   memory.h             memory.cc
-  render_context.h     render_context.cc
+  backend.h            backend.cc
   dispatch.hpp         dispatch.cpp
   scene.h              scene.cc
   object_manager.h     object_manager.cc
   builtin.h            builtin.cc
   utils.h              
-  vkutils.h            vkutils.cc
+  vkutils.h            vkutils.cc           vkutils.inl
 )
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_include_directories(renderer PUBLIC
@@ -170,4 +171,14 @@ target_link_libraries(
   renderer
 )
 target_link_options(vertex_check PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
+
+set(DXC_EXECUTABLE "${CMAKE_SOURCE_DIR}/mjbatch/dxc/bin/dxc")
+add_subdirectory(shaders)
+
+add_executable(mjbatch_smoke tests/smoke_test_main.cc)
+target_compile_options(mjbatch_smoke PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
+target_link_libraries(
+    mjbatch_smoke
+    renderer
+)
 

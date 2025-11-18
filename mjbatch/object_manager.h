@@ -94,9 +94,9 @@ class ObjectManager {
   const mjBatchConfig* config_;
 
   std::array<GeometryBuffers, kNumShapes> shapes_;
-  std::unordered_map<int, GeometryBuffers> meshes_;
-  std::unordered_map<int, GeometryBuffers> convex_hulls_;
-  std::unordered_map<int, GeometryBuffers> height_fields_;
+  mutable std::unordered_map<int, GeometryBuffers> meshes_;
+  mutable std::unordered_map<int, GeometryBuffers> convex_hulls_;
+  mutable std::unordered_map<int, GeometryBuffers> height_fields_;
   std::unordered_map<int, SphericalHarmonics> spherical_harmonics_;
 
 };

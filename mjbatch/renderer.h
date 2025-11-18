@@ -1,7 +1,5 @@
 // -----------------------------------------------------------------------------
-// Vulkan Batch Renderer - Simplified Development Header (Stage 1 Ready)
-// -----------------------------------------------------------------------------
-// Goal: minimal working pipeline for MuJoCo → Vulkan batch rendering
+// Vulkan Batch Renderer - Main Rendering Logic
 // -----------------------------------------------------------------------------
 #pragma once
 
@@ -11,8 +9,12 @@
 #include <string>
 #include <functional>
 #include <cstdint>
+#include <vulkan/vulkan.h>
 #include "device.h"
-
+#include "backend.h"
+#include "render_context.h"
+#include "memory.h"
+#include "scene.h"
 
 // -----------------------------------------------------------------------------
 // Error Handling
@@ -31,8 +33,6 @@ enum class RenderError {
 };
 
 struct RenderResult {
-    VkDevice dev;
-    // dev.dt.destroyDescriptorPool(dev.hdl, pool_state.pool, nullptr);
     RenderError error = RenderError::SUCCESS;
     std::string message;
     int failed_batch_idx = -1;
@@ -41,7 +41,7 @@ struct RenderResult {
 };
 
 // -----------------------------------------------------------------------------
-// Configuration (simplified)
+// Configuration
 // -----------------------------------------------------------------------------
 struct BatchRendererConfig {
     int gpu_id = 0;
@@ -51,15 +51,15 @@ struct BatchRendererConfig {
     bool enable_depth = true;
 
     // Vulkan setup
-    bool enable_validation = true;   // useful for debugging
-    int max_frames_in_flight = 1;    // simplified (no multi-frame sync)
+    bool enable_validation = true;
+    int max_frames_in_flight = 1;
 
     // Logging
     std::function<void(const std::string&)> log_callback = nullptr;
 };
 
 // -----------------------------------------------------------------------------
-// Statistics (kept minimal)
+// Statistics
 // -----------------------------------------------------------------------------
 struct RenderStats {
     float cpu_time_ms = 0.0f;
@@ -70,7 +70,44 @@ struct RenderStats {
 };
 
 // -----------------------------------------------------------------------------
-// Main Batch Renderer Class - Early Stage
+// Uniform buffer structures
+// -----------------------------------------------------------------------------
+struct CameraUBO {
+    glm::mat4 view_proj;
+    glm::vec3 position;
+    float padding1;
+    glm::vec3 forward;
+    float padding2;
+    glm::vec3 up;
+    float padding3;
+    float near_plane;
+    float far_plane;
+    float fov;
+    float padding4;
+};
+
+struct MaterialUBO {
+    glm::vec4 rgba;
+    glm::vec3 specular;
+    float emission;
+    float shininess;
+    int texture_id;
+    float padding1;
+    float padding2;
+};
+
+// Push constants: model transform + material data
+struct PushConstants {
+    glm::mat4 model;          // 64 bytes
+    glm::vec4 rgba;           // 16 bytes
+    glm::vec3 specular;       // 12 bytes
+    float emission;           // 4 bytes
+    float shininess;          // 4 bytes
+    int texture_id;           // 4 bytes
+    float _pad1, _pad2;       // 8 bytes padding
+};
+// -----------------------------------------------------------------------------
+// Main Batch Renderer Class
 // -----------------------------------------------------------------------------
 class BatchRenderer {
 public:
@@ -85,9 +122,7 @@ public:
     BatchRenderer(BatchRenderer&&) noexcept;
     BatchRenderer& operator=(BatchRenderer&&) noexcept;
 
-    // -------------------------------------------------------------------------
     // Core Rendering Interface
-    // -------------------------------------------------------------------------
     RenderResult Render(mjData** data_array, const int* camera_ids = nullptr);
 
     const std::vector<unsigned char>& GetRGBBuffer() const { return rgb_buffer_; }
@@ -106,7 +141,7 @@ private:
     bool Initialize();
     void Cleanup();
 
-    // simplified rendering stages
+    // Rendering stages
     bool UpdateScenes(mjData** data_array, int count);
     bool RecordCommandBuffers(int count);
     bool SubmitAndWait();
@@ -122,97 +157,77 @@ private:
     bool CreateBuffers();
     void DestroyVulkanResources();
 
+    // Helper functions
+    VkShaderModule loadShaderModule(const std::string& shader_path);
+    std::vector<uint32_t> readSPIRV(const std::string& filename);
+
 private:
     const mjModel* model_;
     BatchRendererConfig config_;
+
+    // Backend and device
+    std::unique_ptr<mujoco::mjbatch::Backend> backend_;
+    std::unique_ptr<mujoco::mjbatch::Device> device_;
+    std::unique_ptr<mujoco::mjbatch::RenderContext> render_context_;
 
     struct PerEnvResources {
         mjvScene scene;
         mjvCamera camera;
         mjvOption options;
-        mjrContext mjr_context;  // optional: OpenGL compatibility context
+        std::unique_ptr<mujoco::mjbatch::Scene> render_scene;  // Extracted render-ready scene
     };
     std::vector<PerEnvResources> env_resources_;
 
-    // Minimal Vulkan resource set
-    struct VulkanResources {
-        void* instance;
-        void* physical_device;
-        void* device;
-        void* graphics_queue;
-        void* command_pool;
-        void* command_buffers;
-        void* render_pass;
-        void* pipeline;
-        void* framebuffers;
-        void* color_images;
-        void* depth_images;
-        void* staging_buffers;
-        void* render_fences;
-    } vk_;
+    // Vulkan resources
+    VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptor_sets_;
 
+    VkShaderModule vert_shader_module_ = VK_NULL_HANDLE;
+    VkShaderModule frag_shader_module_ = VK_NULL_HANDLE;
+
+    // Framebuffers and images for batch rendering
+    std::vector<VkFramebuffer> framebuffers_;
+    std::vector<mujoco::mjbatch::LocalImage> color_images_;
+    std::vector<mujoco::mjbatch::LocalImage> depth_images_;
+    std::vector<VkImageView> color_image_views_;
+    std::vector<VkImageView> depth_image_views_;
+
+    // Command buffers and synchronization
+    VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> command_buffers_;
+    std::vector<VkFence> render_fences_;
+
+    // Staging buffers for readback
+    std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;
+
+    // Vertex/index buffers per environment
+    std::vector<mujoco::mjbatch::LocalBuffer> vertex_buffers_;
+    std::vector<mujoco::mjbatch::LocalBuffer> index_buffers_;
+    std::vector<size_t> vertex_counts_;  // Number of vertices per environment
+    std::vector<size_t> index_counts_;  // Number of indices per environment
+    std::vector<size_t> vertex_buffer_sizes_;  // Buffer sizes in bytes
+    std::vector<size_t> index_buffer_sizes_;  // Buffer sizes in bytes
+
+    // Uniform buffers
+    std::vector<mujoco::mjbatch::LocalBuffer> camera_uniform_buffers_;
+    std::vector<mujoco::mjbatch::LocalBuffer> material_uniform_buffers_;
+    std::vector<mujoco::mjbatch::HostBuffer> camera_staging_buffers_;
+
+    // Output buffers
     std::vector<unsigned char> rgb_buffer_;
     std::vector<float> depth_buffer_;
 
     RenderStats last_stats_;
-    // may need accumulative stats as well
     bool initialized_ = false;
     uint64_t frame_counter_ = 0;
 };
 
 // -----------------------------------------------------------------------------
-// Optional Utility (kept simple for now)
+// Utility Functions
 // -----------------------------------------------------------------------------
 std::vector<std::string> EnumerateGPUs();
 bool IsGPUSupported(int gpu_id);
 
-// -----------------------------------------------------------------------------
-// Development Plan (Phased Implementation Roadmap)
-// -----------------------------------------------------------------------------
-//
-// PHASE 1 — Minimum Viable Renderer (Target: 1–2 weeks)
-// ----------------------------------------------------
-// Goal: Get MuJoCo → Vulkan → CPU RGB frame working (single environment)
-// - Implement CreateVulkanInstance / SelectPhysicalDevice / CreateDevice
-// - Create simple RenderPass + Framebuffer (no MSAA, no compute)
-// - Extract mjvScene geometry from MuJoCo
-// - Push static vertices to Vulkan vertex buffer
-// - Render one color image to CPU via staging buffer
-// - Verify image correctness using stbi_write_png
-//
-// PHASE 2 — Batch Rendering Support (Target: 2–3 weeks)
-// ----------------------------------------------------
-// - Support multiple mjData environments (loop or multiview)
-// - Add per-env framebuffers and descriptor sets
-// - Parallelize scene update via std::thread or Vulkan subpasses
-// - Implement depth buffer readback
-// - Maintain one vk::Fence per environment
-//
-// PHASE 3 — Resource Management & Optimization
-// --------------------------------------------
-// - Integrate VMA allocator
-// - Persistent mapped staging buffers
-// - Indirect rendering (vkCmdDrawIndirect)
-// - GPU-side instancing of static geometry
-//
-// PHASE 4 — Advanced Features (optional, later stage)
-// ---------------------------------------------------
-// - Async rendering + RenderFence API
-// - Profiling via Vulkan timestamp queries
-// - MSAA / anisotropy / mipmaps
-// - Compute shader path (for deferred shading or visibility)
-// - Integration with MuJoCo's native offscreen rendering (mjrContext)
-//
-// Notes:
-// - Keep CPU readback path simple until phase 2.
-// - Avoid descriptor set complexity early on.
-// - Test each Vulkan step with validation layers enabled.
-//
-// -----------------------------------------------------------------------------
-// Need Class
-// 1. Descriptors.hpp/cpp
-// 2. Devices.hpp/cpp
-// 3. Memory.hpp/cpp
-// 4. Shaders.hpp/cpp
-// 5. utils.hpp/cpp
-// 6. dispatch.cpp/hpp/template

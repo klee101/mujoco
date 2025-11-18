@@ -20,38 +20,10 @@ struct CrashInfo {
     const char *msg;
 };
 
-void fatal(const char *file, int line, const char *funcname,
-           const char *fmt, ...)
-{
-    // Use a fixed size buffer for the error message. This sets an upper
-    // bound on total memory size, and wastes 4kb on memory, but is very
-    // robust to things going horribly wrong elsewhere.
-    static std::array<char, 4096> buffer;
+[[noreturn]]void fatal(const char *file, int line, const char *funcname,
+           const char *fmt, ...);
 
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer.data(), buffer.size(), fmt, args);
-    va_end(args);
-
-    fatal(CrashInfo {
-        file,
-        line,
-        funcname,
-        buffer.data(),
-    });
-}
-
-void fatal(const CrashInfo &crash)
-{
-    fprintf(stderr, "Error at %s:%d in %s\n", crash.file, crash.line,
-            crash.funcname);
-    if (crash.msg) {
-        fprintf(stderr, "%s\n", crash.msg);
-    }
-
-    fflush(stderr);
-    abort();
-}
+[[noreturn]]void fatal(const CrashInfo &crash);
 
 class QueueState {
 public:
@@ -123,8 +95,6 @@ inline VkDeviceSize alignOffset(VkDeviceSize offset, VkDeviceSize alignment);
 template <typename T>
 inline T divideRoundUp(T a, T b);
 
-inline uint32_t getWorkgroupSize(uint32_t num_items);
-
 void printVkError(VkResult res, const char *msg);
 
 static inline VkResult checkVk(VkResult res,
@@ -152,3 +122,5 @@ static inline VkResult checkVk(VkResult res,
 #define FATAL(fmt, ...) ::mujoco::mjbatch::fatal(__FILE__, __LINE__, "", fmt __VA_OPT__(,) __VA_ARGS__)
 
 }} 
+
+#include "vkutils.inl"

@@ -1,64 +1,50 @@
-#pragma once
+#pragma once 
 
-#include <vulkan/vulkan.h>
-#include <array>
-#include <span>
-#include "vkutils.h"
 #include "device.h"
-#include "dispatch.hpp"
+#include "memory.h"
+#include "backend.h"
+#include <vulkan/vulkan.h>
 
-using DeviceID = std::array<uint8_t, VK_UUID_SIZE>;
+namespace mujoco{
+namespace mjbatch {
 
-namespace mujoco::mjbatch {
+// RenderContext：a global context all scenes need to be batch rendered 
 
-class LoaderLib {
-public:
-    LoaderLib(const LoaderLib &) = delete;
-    ~LoaderLib();
+struct RenderContext
+{
+    Device &device;
+    Backend &backend;
+    MemoryAllocator allocator;
 
-    static LoaderLib * load();
-    static LoaderLib * external(void (*entry_fn)());
+    VkQueue renderQueue = VK_NULL_HANDLE;
 
-    inline void (*getEntryFn() const)() { return entry_fn_; }
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkRenderPass shadowPass = VK_NULL_HANDLE;
 
-private:
-    LoaderLib(void *lib, void (*entry_fn)(), const char *env_str);
-    void *lib_;
-    void (*entry_fn_)();
+    VkCommandPool load_cmd_pool_ = VK_NULL_HANDLE;
+    VkCommandBuffer load_cmd_ = VK_NULL_HANDLE;
+    VkFence load_fence_ = VK_NULL_HANDLE;
 
-    const char *env_str_;
+    uint32_t num_worlds_ = 0;
+
+    uint32_t per_width_ = 0;
+    uint32_t per_height_ = 0;
+
+    // Constructor - requires device and backend references
+    RenderContext(Device &dev, Backend &be) 
+        : device(dev), backend(be), allocator(dev,backend) {}
 };
 
-class Backend {
-public:
-    Backend(void (*vk_entry_fn)(),
-            bool enable_validation,
-            bool enable_present,
-            std::span<const char *const> extra_vk_exts = {});
+// Initialize RenderContext with basic Vulkan resources for batch rendering
+bool initRenderContext(
+    RenderContext &ctx,
+    Device &device,
+    Backend &backend,
+    uint32_t num_worlds,
+    uint32_t per_width,
+    uint32_t per_height);
 
-    Backend(const Backend &) = delete;
-    Backend(Backend &&);
-    ~Backend();
+// Cleanup RenderContext resources
+void cleanupRenderContext(RenderContext &ctx);
 
-    Device * makeDevice(
-        int64_t gpu_idx, std::span<const VkSurfaceKHR> present_surfaces = {});
-
-    Device * makeDevice(
-        const DeviceID &gpu_id, std::span<const VkSurfaceKHR> present_surfaces = {});
-
-    VkInstance hdl;
-    InstanceDispatch dt;
-
-private:
-    Device * makeDevice(
-        VkPhysicalDevice phy, std::span<const VkSurfaceKHR> present_surfaces);
-
-    struct Init;
-    inline Backend(Init init, bool enable_present);
-
-    const VkDebugUtilsMessengerEXT debug_;
-
-    VkPhysicalDevice findPhysicalDevice(const DeviceID &id) const;
-};
-
-}
+}} // namespace mujoco::mjbatch

@@ -17,14 +17,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
-
 #include <glm/glm.hpp>
 
 namespace mujoco {
-  namespace mjbatch{
+  namespace mjbatch {
 
 using float2 = glm::vec2;
 using float3 = glm::vec3;
@@ -32,103 +30,65 @@ using float4 = glm::vec4;
 
 static constexpr size_t kNumIndicesPerQuad = 6;
 
-// Simple vertex structure without UV coordinates
-struct VertexNoUv {
+// Vertex structure for rendering (position, normal, texcoord, color)
+struct Vertex {
   float3 position;
-  float4 orientation;
+  float3 normal;
+  float2 texcoord;
+  float4 color;
   
-  VertexNoUv() : position{0, 0, 0}, orientation{0, 0, 0, 1} {}
-  VertexNoUv(float3 pos, float4 orient) : position(pos), orientation(orient) {}
+  Vertex() : position{0, 0, 0}, normal{0, 0, 1}, texcoord{0, 0}, color{1, 1, 1, 1} {}
+  Vertex(float3 pos, float3 norm, float2 uv, float4 col) 
+    : position(pos), normal(norm), texcoord(uv), color(col) {}
 };
-
-// Calculate orientation (quaternion) from normal vector
-float4 CalculateOrientation(float3 normal);
-
-inline int AppendQuadIndices(uint16_t* ptr, int idx, uint16_t a, uint16_t b,
-                             uint16_t c, uint16_t d) {
-  ptr[idx++] = a;
-  ptr[idx++] = b;
-  ptr[idx++] = c;
-  ptr[idx++] = a;
-  ptr[idx++] = c;
-  ptr[idx++] = d;
-  return idx;
-}
-
-std::size_t NumVerticesPerSide(int num_quads_per_axis);
-std::size_t NumIndicesPerSide(int num_quads_per_axis);
 
 // Geometry buffer structure containing raw vertex and index data
 struct GeometryBuffers {
-  std::vector<VertexNoUv> vertices;
-  std::vector<uint16_t> indices;
+  std::vector<Vertex> vertices;
+  std::vector<uint32_t> indices;  // Changed to uint32_t for better compatibility
+  
+  size_t GetVertexCount() const { return vertices.size(); }
+  size_t GetIndexCount() const { return indices.size(); }
+  size_t GetVertexBufferSize() const { return vertices.size() * sizeof(Vertex); }
+  size_t GetIndexBufferSize() const { return indices.size() * sizeof(uint32_t); }
 };
 
 // ============================================================================
-// Geometry Builders
+// Unified Geometry Builder
 // ============================================================================
 
-class LineBuilder {
- public:
-  static GeometryBuffers Build();
+class GeometryBuilder {
+public:
+  // Build geometry from MuJoCo geometry type
+  static GeometryBuffers BuildFromType(int geom_type, const mjModel* model);
+  
+  // Build specific primitive shapes
+  static GeometryBuffers BuildLine();
+  static GeometryBuffers BuildPlane(int num_quads_per_axis = 10);
+  static GeometryBuffers BuildLineBox();
+  static GeometryBuffers BuildBox(int num_quads_per_axis = 10);
+  static GeometryBuffers BuildSphere(int num_stacks = 20, int num_slices = 20);
+  static GeometryBuffers BuildEllipsoid(int num_stacks = 20, int num_slices = 20);
+  static GeometryBuffers BuildCone(int num_stacks = 10, int num_slices = 20);
+  static GeometryBuffers BuildDisk(int num_slices = 20);
+  static GeometryBuffers BuildDome(int num_stacks = 10, int num_slices = 20);
+  static GeometryBuffers BuildTube(int num_stacks = 10, int num_slices = 20);
+  static GeometryBuffers BuildCylinder(int num_stacks = 10, int num_slices = 20);
+  static GeometryBuffers BuildCapsule(int num_stacks = 10, int num_slices = 20);
+  
+  // Build mesh from MuJoCo mesh data
+  static GeometryBuffers BuildMesh(const mjModel* model, int mesh_id);
+  
+  // Build height field
+  static GeometryBuffers BuildHeightField(const mjModel* model, int hfield_id);
+
+private:
+  // Helper functions
+  static float4 CalculateOrientation(float3 normal);
+  static int AppendQuadIndices(uint32_t* ptr, int idx, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+  static std::size_t NumVerticesPerSide(int num_quads_per_axis);
+  static std::size_t NumIndicesPerSide(int num_quads_per_axis);
 };
-
-class PlaneBuilder {
- public:
-  static GeometryBuffers Build(int num_quads_per_axis);
-};
-
-class LineBoxBuilder {
- public:
-  static GeometryBuffers Build();
-};
-
-class BoxBuilder {
- public:
-  static GeometryBuffers Build(int num_quads_per_axis);
-};
-
-class SphereBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices);
-};
-
-class TubeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices);
-};
-
-class DiskBuilder {
- public:
-  static GeometryBuffers Build(int num_slices);
-};
-
-class DomeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices);
-};
-
-class ConeBuilder {
- public:
-  static GeometryBuffers Build(int num_stacks, int num_slices);
-};
-
-// ============================================================================
-// Public API Functions (Declarations only)
-// ============================================================================
-
-GeometryBuffers CreateGeometryFromType(int geom_type, const mjModel* model);
-
-// Helper functions for composite geometries
-GeometryBuffers CreateLine(const mjModel* model);
-GeometryBuffers CreatePlane(const mjModel* model);
-GeometryBuffers CreateLineBox(const mjModel* model);
-GeometryBuffers CreateBox(const mjModel* model);
-GeometryBuffers CreateSphere(const mjModel* model);
-GeometryBuffers CreateDome(const mjModel* model);
-GeometryBuffers CreateDisk(const mjModel* model);
-GeometryBuffers CreateCone(const mjModel* model);
-GeometryBuffers CreateTube(const mjModel* model);
 
   } // namespace mjbatch
 } // namespace mujoco

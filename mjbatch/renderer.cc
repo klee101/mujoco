@@ -64,6 +64,13 @@ static std::string HexPreview(const void* data, size_t n, size_t maxbytes = 16) 
     return oss.str();
 }
 
+std::string glm_vec3_to_string(const glm::vec3& v) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(4) 
+        << "(" << v.x << ", " << v.y << ", " << v.z << ")";
+    return oss.str();
+}
+
 // --------------------------- Factory / ctor ---------------------------------
 std::unique_ptr<BatchRenderer> BatchRenderer::Create(
     const mjModel* m,
@@ -91,6 +98,7 @@ BatchRenderer::BatchRenderer(const mjModel* m, const BatchRendererConfig& config
     if (config_.enable_depth) {
         depth_buffer_.resize((size_t)config_.batch_size * config_.frame_width * config_.frame_height);
     }
+
 }
 
 BatchRenderer::~BatchRenderer() {
@@ -181,6 +189,271 @@ VkShaderModule BatchRenderer::loadShaderModule(const std::string& shader_path) {
     return shaderModule;
 }
 
+static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
+    std::vector<TextureInfo> tmpTextures_;
+    tmpTextures_.reserve(model->ntex);
+
+    for (int i = 0; i < model->ntex; ++i) {
+        TextureInfo tex_info;
+        tex_info.texture_id = i;
+        tex_info.type = model->tex_type[i];
+        tex_info.width = model->tex_width[i];
+        tex_info.height = model->tex_height[i];
+        int nchannel = model->tex_nchannel[i];
+
+        // -----------------------------------------------------------
+        // [MODIFIED Strategy] 为了 Vulkan 兼容性 (对齐)，统一转换为 RGBA (4通道)
+        // 即使是 CubeMap，如果源是 RGB，也转为 RGBA。
+        // -----------------------------------------------------------
+        tex_info.channels = 4;
+
+        int tex_data_adr = model->tex_adr[i];
+        if (tex_data_adr < 0 || tex_data_adr >= model->ntexdata) continue;
+
+        // 计算总像素数
+        // 注意：MuJoCo 的 CubeMap 如果是标准条带，height 已经是 width 的 6 倍(或反之)，
+        // pixel_count 自动包含了所有面。
+        size_t pixel_count = static_cast<size_t>(tex_info.width) * tex_info.height;
+        size_t data_size = pixel_count * tex_info.channels; // always * 4
+        tex_info.data.resize(data_size);
+
+        const unsigned char* tex_data = model->tex_data + tex_data_adr;
+
+        // 执行转换 (RGB/Gray -> RGBA)
+        if (nchannel == 3) {
+            for (size_t j = 0; j < pixel_count; ++j) {
+                tex_info.data[j * 4 + 0] = tex_data[j * 3 + 0];
+                tex_info.data[j * 4 + 1] = tex_data[j * 3 + 1];
+                tex_info.data[j * 4 + 2] = tex_data[j * 3 + 2];
+                tex_info.data[j * 4 + 3] = 255; 
+            }
+        } else if (nchannel == 4) {
+            std::memcpy(tex_info.data.data(), tex_data, pixel_count * 4);
+        } else if (nchannel == 1) {
+            for (size_t j = 0; j < pixel_count; ++j) {
+                unsigned char gray = tex_data[j];
+                tex_info.data[j * 4 + 0] = gray;
+                tex_info.data[j * 4 + 1] = gray;
+                tex_info.data[j * 4 + 2] = gray;
+                tex_info.data[j * 4 + 3] = 255;
+            }
+        }
+
+        tmpTextures_.push_back(std::move(tex_info));
+        printf("Extracted texture ID %d: %dx%d, Channels=%d, Type=%d\n",
+               i, tex_info.width, tex_info.height, tex_info.channels, tex_info.type);
+    }
+    printf("Extracted %zu textures from model.\n", tmpTextures_.size());
+    return tmpTextures_;
+}
+// --------------------------- Texture Loading ---------------------------------
+// NOTE: Now it is only a simple version to test this feature
+// In the future, we may need to put this and the whole texture
+// System into RenderContext for better management
+// NOTE: here all the texture will be store as a 2D texture 
+// which means that all the cube map will not be processed correctly
+// TODO：divide the Cube and 2d textures
+
+LoadedTextureResources BatchRenderer::LoadMaterialTextures()
+{
+    LoadedTextureResources result;
+    
+    Device &dev = *device_;
+    MemoryAllocator &alloc = render_context_->allocator;
+    VkQueue queue = render_context_->renderQueue; // 确保你有这个队列
+
+    VkCommandPool tmp_pool = makeCmdPool(dev, dev.gfxQF);
+    VkCommandBuffer cmdbuf = makeCmdBuffer(dev, tmp_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+    
+    VkCommandBufferBeginInfo begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    
+    dev.dt.beginCommandBuffer(cmdbuf, &begin_info);
+    
+    auto sources = GetExtractTextures(model_);
+
+    for (size_t i = 0; i < sources.size(); ++i)
+    {
+        const TextureInfo &tx = sources[i];
+        
+        // 1. 基础属性判断
+        bool is_cube_type = (tx.type == mjTEXTURE_CUBE || tx.type == mjTEXTURE_SKYBOX);
+        
+        // 检查是否为单面 CubeMap (Source is Square)
+        // 标准 MuJoCo CubeMap 数据通常 height = 6 * width (垂直条带) 
+        // 或者是 width = 6 * height (水平条带，较少见)
+        // 如果 width == height 且是 Cube 类型，则视为 "Single Face Repeat"
+        bool is_single_face_cube = is_cube_type && (tx.width == tx.height);
+
+        uint32_t width = tx.width;
+        uint32_t height = tx.height; // 如果是 standard cube，这个 height 可能是 6*w
+        
+        // 真正的单面尺寸 (Face Size)
+        uint32_t face_width = width;
+
+        uint32_t layers = is_cube_type ? 6 : 1;
+
+        LocalTexture texture;
+        TextureRequirements texture_reqs;
+
+        // 2. 创建 GPU Image 资源 (Target)
+        // 无论是单面重复还是标准条带，GPU 端都需要 6 个 layer 的 CubeImage
+        if (is_cube_type) {
+            auto res = alloc.makeTextureCube(face_width, 1, VK_FORMAT_R8G8B8A8_SRGB);
+            texture = res.first;
+            texture_reqs = res.second;
+        } else {
+            auto res = alloc.makeTexture2D(width, height, 1, VK_FORMAT_R8G8B8A8_SRGB);
+            texture = res.first;
+            texture_reqs = res.second;
+        }
+
+        // 3. 准备 Staging Buffer
+        // 关键点：如果是 is_single_face_cube，我们只需要上传 1 个面的数据到 Buffer
+        VkDeviceSize staging_size = tx.data.size(); 
+        
+        // 如果是单面重复，GetExtractTextures 返回的数据大小本身就是 width*height*4
+        // 如果是标准条带，返回的数据大小是 width*(width*6)*4
+        // 所以直接用 tx.data.size() 是安全的
+        
+        HostBuffer texture_hb_staging = alloc.makeStagingBuffer(staging_size);
+        memcpy(texture_hb_staging.ptr, tx.data.data(), staging_size);
+        texture_hb_staging.flush(dev);
+
+        // 4. 分配 GPU 显存并绑定
+        std::optional<VkDeviceMemory> texture_backing = alloc.alloc(texture_reqs.size);
+        assert(texture_backing.has_value());
+        dev.dt.bindImageMemory(dev.hdl, texture.image, texture_backing.value(), 0);
+
+        // 5. Barrier: Undefined -> Transfer Dst
+        VkImageMemoryBarrier copy_prepare = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        copy_prepare.srcAccessMask = 0;
+        copy_prepare.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        copy_prepare.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        copy_prepare.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        copy_prepare.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copy_prepare.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        copy_prepare.image = texture.image;
+        copy_prepare.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy_prepare.subresourceRange.baseMipLevel = 0;
+        copy_prepare.subresourceRange.levelCount = 1;
+        copy_prepare.subresourceRange.baseArrayLayer = 0;
+        // 这里的 layerCount 必须覆盖所有层，以便一次性转换整个 Image
+        copy_prepare.subresourceRange.layerCount = layers; 
+
+        dev.dt.cmdPipelineBarrier(cmdbuf,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &copy_prepare);
+
+        // 6. 执行 Copy (核心修改部分)
+        std::vector<VkBufferImageCopy> regions;
+
+        if (is_cube_type) {
+            uint32_t face_size_bytes = face_width * face_width * 4; // RGBA
+
+            for (uint32_t face = 0; face < 6; face++) {
+                VkBufferImageCopy region = {};
+                
+                // [SPECIAL LOGIC] 
+                if (is_single_face_cube) {
+                    // 情况 A: 单面重复。
+                    // 所有的 GPU Layer (0-5) 都从 Buffer 的 0 偏移处读取同一份数据
+                    region.bufferOffset = 0;
+                } else {
+                    // 情况 B: 标准条带 (Vertical Strip)。
+                    // 假设数据在 Buffer 中是 +X, -X, +Y, -Y, +Z, -Z 顺序排列
+                    region.bufferOffset = face * face_size_bytes;
+                }
+
+                region.bufferRowLength = 0; // Tightly packed
+                region.bufferImageHeight = 0;
+
+                region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                region.imageSubresource.mipLevel = 0;
+                region.imageSubresource.baseArrayLayer = face; // 目标层索引
+                region.imageSubresource.layerCount = 1;
+
+                region.imageExtent.width = face_width;
+                region.imageExtent.height = face_width; // Cube 面是正方形
+                region.imageExtent.depth = 1;
+
+                regions.push_back(region);
+            }
+        } else {
+            // 2D Texture
+            VkBufferImageCopy region = {};
+            region.bufferOffset = 0;
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = { width, height, 1 };
+            regions.push_back(region);
+        }
+
+        dev.dt.cmdCopyBufferToImage(cmdbuf, texture_hb_staging.buffer,
+                texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                static_cast<uint32_t>(regions.size()), regions.data());
+
+        // 7. Barrier: Transfer Dst -> Shader Read Only
+        VkImageMemoryBarrier finish_prepare = copy_prepare;
+        finish_prepare.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        finish_prepare.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        finish_prepare.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        finish_prepare.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // layerCount 依然是 layers (1 或 6)
+
+        dev.dt.cmdPipelineBarrier(cmdbuf,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 
+                0, 0, nullptr, 0, nullptr, 1, &finish_prepare);
+
+        // 8. Create View & Store
+        VkImageViewCreateInfo view_info = {};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.viewType = is_cube_type ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
+        view_info.image = texture.image;
+        view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = layers;
+
+        VkImageView view;
+        REQ_VK(dev.dt.createImageView(dev.hdl, &view_info, nullptr, &view)); // TODO: Add error handling macro
+
+        // Store Resources
+        result.host_buffers.emplace_back(std::move(texture_hb_staging));
+        MaterialTexture mat_tex(std::move(texture), view, texture_backing.value());
+
+        if (is_cube_type) {
+            TextureMapping mapping = { 1, (int)result.textures_cube.size() };
+            result.global_texture_lookup.push_back(mapping);
+            result.textures_cube.emplace_back(std::move(mat_tex));
+        } else {
+            TextureMapping mapping = { 0, (int)result.textures_2d.size() };
+            result.global_texture_lookup.push_back(mapping);
+            result.textures_2d.emplace_back(std::move(mat_tex));
+        }
+    }
+
+    // End & Submit
+    dev.dt.endCommandBuffer(cmdbuf);
+    VkSubmitInfo submit_info = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &cmdbuf;
+
+    dev.dt.queueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+    dev.dt.deviceWaitIdle(dev.hdl);
+    
+    dev.dt.freeCommandBuffers(dev.hdl, tmp_pool, 1, &cmdbuf);
+    dev.dt.destroyCommandPool(dev.hdl, tmp_pool, nullptr);
+
+    return result;
+}
+
 // --------------------------- Initialize / Cleanup ----------------------------
 bool BatchRenderer::Initialize() {
     LOG(config_, "Initialize(): starting");
@@ -215,6 +488,9 @@ bool BatchRenderer::Initialize() {
         LOG(config_, "Initialize(): initRenderContext failed");
         return false;
     }
+    // NOTE: a temporary sampler for all textures
+    texture_sampler_ = makeImmutableSampler(*device_, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    material_textures_= LoadMaterialTextures();
 
     // Create pipeline and resources
     if (!CreatePipeline()) {
@@ -391,27 +667,69 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
                 staging_buffers.push_back(std::move(staging));
             }
         } else {
-            // Subsequent updates: only update transforms in Scene
-             res.render_scene->Update(model_, &res.scene);
+            // Update the transforms 
+             res.render_scene->Update(model_, &res.scene, data_array[i]);
          }
         
-        // Update camera uniform buffer
-        const auto& camera_info = res.render_scene->GetCamera();
-        CameraUBO camera_ubo{};
-        camera_ubo.view_proj = camera_info.view_proj_matrix;
-        camera_ubo.position = camera_info.position;
-        camera_ubo.forward = camera_info.forward;
-        camera_ubo.up = camera_info.up;
-        camera_ubo.near_plane = camera_info.near_plane;
-        camera_ubo.far_plane = camera_info.far_plane;
-        camera_ubo.fov = camera_info.fov;
+        // Choose the view, update the camera Info
+        int cam_id = res.render_scene->FindCameraID(model_, "frontview");
+        // 1.77 = 16:9 aspect ratio
+        res.render_scene->UpdateCameraFromSimulation(model_, data_array[i], cam_id, 1.77);
+        //Update camera uniform buffer
+        const CameraUBO& camera_ubo = res.render_scene->GetCameraUBO();
+
+        LOG(config_, "Scene " + std::to_string(i) + 
+            " Camera view_proj=" + HexPreview(&camera_ubo.view_proj, sizeof(camera_ubo.view_proj)) +
+            ", position=" + std::to_string(camera_ubo.position.x) +", "+
+            std::to_string(camera_ubo.position.y) +", "+
+            std::to_string(camera_ubo.position.z) +", "+
+            ", forward=" + HexPreview(&camera_ubo.forward, sizeof(camera_ubo.forward)) +
+            ", up=" + std::to_string(camera_ubo.up.x) +", "+
+            std::to_string(camera_ubo.up.y) +", "+
+            std::to_string(camera_ubo.up.z) +", "+
+            ", near_plane=" + std::to_string(camera_ubo.near_plane) +
+            ", far_plane=" + std::to_string(camera_ubo.far_plane) +
+            ", fov=" + std::to_string(camera_ubo.fov));
         
         std::memcpy(camera_staging_buffers_[i].ptr, &camera_ubo, sizeof(CameraUBO));
         camera_staging_buffers_[i].flush(dev);
         copy_ops.push_back({camera_staging_buffers_[i].buffer, 
                            camera_uniform_buffers_[i].buffer, 
                            sizeof(CameraUBO)});
-     
+
+        // Update light uniform buffer
+        const auto& lights = res.render_scene->GetLights();
+        LOG(config_, "Scene " + std::to_string(i) + " has " + std::to_string(lights.size()) + " lights.");
+        LightUBO light_ubo{};
+        size_t light_count = std::min(lights.size(), size_t(10));
+        for (size_t j = 0; j < light_count; ++j) {
+            light_ubo.lights[j] = lights[j];
+            std::string type_name;
+            switch (lights[j].type) {
+                case 0: type_name = "Spot"; break;
+                case 1: type_name = "Directional"; break;
+                case 2: type_name = "Point"; break;
+                default: type_name = "Unknown (" + std::to_string(lights[j].type) + ")"; break;
+            }
+            LOG(config_, " Light " + std::to_string(j) + 
+                        ": pos=" + glm_vec3_to_string(lights[j].position) +
+                        ", direction=" + glm_vec3_to_string(lights[j].direction) +
+                        ", type=" + type_name + 
+                        ", ambient=" + glm_vec3_to_string(lights[j].ambient) +
+                        ", diffuse=" + glm_vec3_to_string(lights[j].diffuse) +
+                        ", specular=" + glm_vec3_to_string(lights[j].specular) +
+                        ", attenuation=" + glm_vec3_to_string(lights[j].attenuation));
+        }
+        light_ubo.lightCount = static_cast<uint32_t>(light_count);
+        std::memcpy(light_staging_buffers_[i].ptr, &light_ubo, sizeof(LightUBO));
+        light_staging_buffers_[i].flush(dev);
+        copy_ops.push_back({light_staging_buffers_[i].buffer, 
+                           light_uniform_buffers_[i].buffer, 
+                           sizeof(LightUBO)});
+
+        printf("size of LightUBO: %zu bytes, non-zero bytes: %zu\n", 
+            sizeof(LightUBO), CountNonZero(&light_ubo, sizeof(LightUBO)));
+
     }
     
     // Batch upload all copy operations
@@ -477,10 +795,13 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
         // Bind pipeline
         dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
         
-        // Bind descriptor set (camera + material)
+        // Bind descriptor set (camera + light)
         dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                    pipeline_layout_, 0, 1, &descriptor_sets_[i], 0, nullptr);
-  
+        // Bind global texture descriptor set
+        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   pipeline_layout_, 1, 1, &global_texture_descriptor_set, 0, nullptr);
+
         // Set viewport and scissor
         VkViewport viewport{};
         viewport.x = 0.0f;
@@ -514,8 +835,8 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
             
             for (const auto& drawable : drawables) {
                 if (!drawable.visible) {
-                    index_offset += drawable.geometry.GetIndexCount();
-                    vertex_offset += drawable.geometry.GetVertexCount();
+                    index_offset += drawable.geometry->GetIndexCount();
+                    vertex_offset += drawable.geometry->GetVertexCount();
                     continue;
                 };
                 PushConstants pushConstants{};
@@ -525,17 +846,108 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
                 pushConstants.specular = drawable.material.specular;
                 pushConstants.emission = drawable.material.emission;
                 pushConstants.shininess = drawable.material.shininess;
-                pushConstants.texture_id = drawable.material.texture_id;
-                
+                pushConstants.reflectance = drawable.material.reflectance;
+
+                // here, the cube texture id is also < 0, find why 
+                bool has_valid_texture = (drawable.material.texture_id >= 0);
+                bool index_in_bounds = false;
+
+                if (has_valid_texture) {
+                    // 2. 安全检查：确保 ID 没有超出 lookup 表的大小
+                    if (drawable.material.texture_id < material_textures_.global_texture_lookup.size()) {
+                        index_in_bounds = true;
+                        auto& lookup_info = material_textures_.global_texture_lookup[drawable.material.texture_id];
+                        
+                        pushConstants.texture_type = lookup_info.type;
+                        pushConstants.texture_index = lookup_info.index_in_array;
+                    } else {
+                        // 虽然 ID >= 0，但超出了 lookup table 的范围 (异常情况)
+                        printf("[ERROR] Texture ID %d is out of bounds (Lookup Size: %zu)\n", 
+                            drawable.material.texture_id, material_textures_.global_texture_lookup.size());
+                        pushConstants.texture_type = -1;
+                        pushConstants.texture_index = -1;
+                    }
+                } else {
+                    // ID < 0，表示无纹理
+                    pushConstants.texture_type = -1;
+                    pushConstants.texture_index = -1; // 给一个安全的默认值，防止 Shader 读取垃圾数据
+                }
+                if(pushConstants.texture_type == -1) 
+                {
+                    printf("\n=== Drawable Status Report [GeomID: %d] ===\n", drawable.geom_id);
+                    
+                    printf("  > Geometry Info:\n");
+                    printf("    Vertex Count : %d\n", int(drawable.geometry->GetVertexCount()));
+                    printf("    Index Count  : %d\n", int(drawable.geometry->GetIndexCount()));
+
+                    // [新增] 打印变换矩阵 (按行打印，方便阅读)
+                    printf("  > Transform Matrix (Model):\n");
+                    // GLM 是列主序 (Column-Major)，但 printf 通常按内存顺序打印
+                    // 这里我们按直观的 4x4 矩阵格式打印 (Row-by-Row for readability)
+                    // 注意：glm::mat4[col][row]，所以 matrix[0][0] 是第一列第一行，matrix[3][0] 是第四列第一行 (Tx)
+                    for (int row = 0; row < 4; ++row) {
+                        printf("    | %6.2f %6.2f %6.2f %6.2f |\n", 
+                            pushConstants.model[0][row], 
+                            pushConstants.model[1][row], 
+                            pushConstants.model[2][row], 
+                            pushConstants.model[3][row]);
+                    }
+                    
+                    // 检查缩放是否异常 (矩阵的前3列向量长度)
+                    float scaleX = glm::length(glm::vec3(pushConstants.model[0]));
+                    float scaleY = glm::length(glm::vec3(pushConstants.model[1]));
+                    float scaleZ = glm::length(glm::vec3(pushConstants.model[2]));
+                    if (scaleX < 1e-6 || scaleY < 1e-6 || scaleZ < 1e-6) {
+                        printf("    [WARNING] Zero or near-zero scale detected! (%.4f, %.4f, %.4f)\n", scaleX, scaleY, scaleZ);
+                    }
+
+                    printf("  > Material Props:\n");
+                    printf("    RGBA        : (%.2f, %.2f, %.2f, %.2f)\n", 
+                        pushConstants.rgba.r, pushConstants.rgba.g, pushConstants.rgba.b, pushConstants.rgba.a);
+                    printf("    Specular    : (%.2f, %.2f, %.2f) | Shininess: %.1f\n", 
+                        pushConstants.specular.x, pushConstants.specular.y, pushConstants.specular.z, pushConstants.shininess);
+                    printf("    Emission    : %.2f | Reflectance: %.2f\n", 
+                        pushConstants.emission, pushConstants.reflectance);
+
+                    printf("  > Texture Pipeline:\n");
+                    printf("    [1] Raw ID from Material : %d\n", drawable.material.texture_id);
+                    
+                    if (!has_valid_texture) {
+                        printf("    [2] Lookup Status        : SKIPPED (Raw ID < 0)\n");
+                        printf("    [3] Reason Check         : Material has no texture assigned in XML?\n");
+                    } else if (!index_in_bounds) {
+                        printf("    [2] Lookup Status        : FAILED (Out of Bounds)\n");
+                    } else {
+                        auto& info = material_textures_.global_texture_lookup[drawable.material.texture_id];
+                        printf("    [2] Lookup Table Entry   : { Type: %d, Index: %d }\n", info.type, info.index_in_array);
+                    }
+
+                    // 注意：这里修正了之前的逻辑，你的 TextureMapping 中 2 通常代表 Cube
+                    // 之前代码里三目运算符写的是 (pushConstants.texture_type == 1 ? "Cube" : "2D")，请确认你的 Enum 定义
+                    // 假设 0=None/Error, 1=2D, 2=Cube
+                    const char* typeName = "Unknown";
+                    if (pushConstants.texture_type == -1) typeName = "None";
+                    else if (pushConstants.texture_type == 0) typeName = "2D";
+                    else if (pushConstants.texture_type == 1) typeName = "Cube";
+
+                    printf("    [4] Final PushConstants  : Type = %d (%s), Index = %d\n", 
+                        pushConstants.texture_type, typeName, pushConstants.texture_index);
+                    printf("===============================================\n");
+                }
+
                 dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                       0, sizeof(PushConstants), &pushConstants);
                 // Draw this drawable
-                uint32_t index_count = drawable.geometry.GetIndexCount();
+                uint32_t index_count = drawable.geometry->GetIndexCount();
                 vkCmdDrawIndexed(cmd, index_count, 1, index_offset, vertex_offset, 0);
                 
                 index_offset += index_count;
-                vertex_offset += drawable.geometry.GetVertexCount();
+                vertex_offset += drawable.geometry->GetVertexCount();
+                // LOG(config_, "Draw drawable with "
+                //     + std::to_string(index_count) + " indices at offset "
+                //     + std::to_string(index_offset) + ", vertex offset "
+                //     + std::to_string(vertex_offset));
             }  
         }
         
@@ -886,7 +1298,7 @@ bool BatchRenderer::CreatePipeline() {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
     
@@ -928,22 +1340,76 @@ bool BatchRenderer::CreatePipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // Descriptor set layout (BUGFIX!!! now this part not work!!!)
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    // feature 11/19: add texture support 
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
     bindings[0].binding = 0; // Camera UBO
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     
-    bindings[1].binding = 1; // Material UBO
+    bindings[1].binding = 1; // Lighting UBO
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 2;
-    dslInfo.pBindings = bindings;
+    dslInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    dslInfo.pBindings = bindings.data();
     REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &dslInfo, nullptr, &descriptor_set_layout_));
+    
+
+    // 1. Define the bindings
+    VkDescriptorSetLayoutBinding texbindings[] = {
+        // Binding 0: 2D Textures Array
+        {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = kMaxBindlessTextures, // 例如 1024
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = nullptr,
+        },
+        // Binding 1: Cube Textures Array
+        {
+            .binding = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, // Cube 也使用 SAMPLED_IMAGE
+            .descriptorCount = kMaxBindlessTextures, // 或者设置一个较小的上限，如 kMaxCubeTextures
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = nullptr,
+        },
+        // Binding 2: Shared Sampler (Immutable)
+        {
+            .binding = 2,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = &texture_sampler_
+        }
+    };
+
+    // 2. Define Binding Flags (Partially Bound for arrays)
+    VkDescriptorBindingFlags binding_flags[] = { 
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, // For Binding 0 (2D)
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, // For Binding 1 (Cube)
+        0                                            // For Binding 2 (Sampler)
+    };
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flag_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .pNext = nullptr,
+        .bindingCount = 3,
+        .pBindingFlags = binding_flags,
+    };
+
+    // 3. Create the layout
+    VkDescriptorSetLayoutCreateInfo layout_info = {};
+    layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.pNext = &flag_info;
+    layout_info.bindingCount = 3;
+    layout_info.pBindings = texbindings;
+
+    REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &layout_info, nullptr, &global_texture_set_layout));
+    
     //-------------------------------------------------------------------------//
     
     // Pipeline layout with push constants for per-drawable transform
@@ -952,10 +1418,15 @@ bool BatchRenderer::CreatePipeline() {
     pushConstantRange.offset = 0;
     pushConstantRange.size = sizeof(float) * 16; // view-projection matrix (mat4)
     
+    std::vector<VkDescriptorSetLayout> setLayouts = {
+        descriptor_set_layout_,      // index 0 -> Set 0 (Camera/Light UBOs)
+        global_texture_set_layout    // index 1 -> Set 1 (Bindless Textures)
+    };
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &descriptor_set_layout_;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts.data();
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
@@ -1079,16 +1550,16 @@ bool BatchRenderer::CreateBuffers() {
     }
 
     // Create descriptor pool
-    VkDescriptorPoolSize poolSizes[2];
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = config_.batch_size; // Camera UBOs
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = config_.batch_size; // Material UBOs
+    poolSizes[1].descriptorCount = config_.batch_size; // Light UBOs
     
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = config_.batch_size;
     REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &descriptor_pool_));
     
@@ -1101,12 +1572,42 @@ bool BatchRenderer::CreateBuffers() {
     allocDesInfo.descriptorSetCount = config_.batch_size;
     allocDesInfo.pSetLayouts = layouts.data();
     REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocDesInfo, descriptor_sets_.data()));
-    
+    {
+        // Create global texture descriptor set for bindless textures
+        // here use a independent pool and set for global textures
+        // 1. Define the pool size (count needs to cover all descriptors)
+        std::array<VkDescriptorPoolSize, 2> pool_sizes{};
+        // Binding 0: 图片数组
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; // 注意：不再是 COMBINED_IMAGE_SAMPLER
+        pool_sizes[0].descriptorCount = kMaxBindlessTextures;  // 必须足够大！
+
+        // Binding 1: 采样器
+        pool_sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+        pool_sizes[1].descriptorCount = 1;
+
+        // 2. Create the pool
+        VkDescriptorPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+        pool_info.pPoolSizes = pool_sizes.data();
+        pool_info.maxSets = 1;
+
+        REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &pool_info, nullptr, &global_texture_descriptor_pool));
+        VkDescriptorSetAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = global_texture_descriptor_pool;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &global_texture_set_layout;
+
+        REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &alloc_info, &global_texture_descriptor_set));   
+    }
+
     // Create uniform buffers
     camera_uniform_buffers_.clear();
-    material_uniform_buffers_.clear();
     camera_staging_buffers_.clear();
-    
+
+    light_uniform_buffers_.clear();
+    light_staging_buffers_.clear();
     for (int i = 0; i < config_.batch_size; ++i) {
         // Camera UBO
         auto camera_ubo = allocator.makeLocalBuffer(
@@ -1118,11 +1619,14 @@ bool BatchRenderer::CreateBuffers() {
         camera_staging_buffers_.emplace_back(
             allocator.makeStagingBuffer(sizeof(CameraUBO)));
         
-        // Material UBO
-        auto material_ubo = allocator.makeLocalBuffer(
-            sizeof(MaterialUBO), 
+        // light UBO
+        auto light_ubo = allocator.makeLocalBuffer(
+            sizeof(LightUBO), 
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        material_uniform_buffers_.emplace_back(std::move(*material_ubo));
+        light_uniform_buffers_.emplace_back(std::move(*light_ubo));
+
+        light_staging_buffers_.emplace_back(
+            allocator.makeStagingBuffer(sizeof(LightUBO)));
         
         // Update descriptor sets
         VkDescriptorBufferInfo cameraBufferInfo{};
@@ -1130,10 +1634,10 @@ bool BatchRenderer::CreateBuffers() {
         cameraBufferInfo.offset = 0;
         cameraBufferInfo.range = sizeof(CameraUBO);
         
-        VkDescriptorBufferInfo materialBufferInfo{};
-        materialBufferInfo.buffer = material_uniform_buffers_[i].buffer;
-        materialBufferInfo.offset = 0;
-        materialBufferInfo.range = sizeof(MaterialUBO);
+        VkDescriptorBufferInfo lightBufferInfo{};
+        lightBufferInfo.buffer = light_uniform_buffers_[i].buffer;
+        lightBufferInfo.offset = 0;
+        lightBufferInfo.range = sizeof(LightUBO);
         
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1150,11 +1654,75 @@ bool BatchRenderer::CreateBuffers() {
         writes[1].dstArrayElement = 0;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &materialBufferInfo;
+        writes[1].pBufferInfo = &lightBufferInfo;
         
+        // TODO: Add the texture sampler descriptor
         dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
     }
 
+    // update global texture descriptor set for bindless textures
+    const auto& loaded_resources = LoadMaterialTextures();
+    const auto& textures_2d = loaded_resources.textures_2d;
+    const auto& textures_cube = loaded_resources.textures_cube;
+
+    std::vector<VkDescriptorImageInfo> image_infos_2d;
+    std::vector<VkDescriptorImageInfo> image_infos_cube;
+    
+    image_infos_2d.reserve(textures_2d.size());
+    image_infos_cube.reserve(textures_cube.size());
+
+    // 2. 填充 2D Image Infos
+    for (const auto& tex : textures_2d) {
+        VkDescriptorImageInfo info = {};
+        info.imageView = tex.view; // 这里的 view 必须是 VK_IMAGE_VIEW_TYPE_2D
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        info.sampler = VK_NULL_HANDLE; // 使用 Immutable Sampler，这里填 null
+        image_infos_2d.push_back(info);
+    }
+
+    // 3. 填充 Cube Image Infos
+    for (const auto& tex : textures_cube) {
+        VkDescriptorImageInfo info = {};
+        info.imageView = tex.view; // 这里的 view 必须是 VK_IMAGE_VIEW_TYPE_CUBE
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        info.sampler = VK_NULL_HANDLE; 
+        image_infos_cube.push_back(info);
+    }
+
+    // 4. 构建 Writes
+    std::vector<VkWriteDescriptorSet> writes;
+    writes.reserve(textures_2d.size() + textures_cube.size());
+
+    // 生成 2D 纹理的 Writes (Binding 0)
+    for (size_t i = 0; i < textures_2d.size(); ++i) {
+        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = global_texture_descriptor_set;
+        write.dstBinding = 0; // Binding 0
+        write.dstArrayElement = static_cast<uint32_t>(i);
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        write.pImageInfo = &image_infos_2d[i]; // 指向稳定的 vector 元素地址
+
+        writes.push_back(write);
+    }
+
+    // 生成 Cube 纹理的 Writes (Binding 1)
+    for (size_t i = 0; i < textures_cube.size(); ++i) {
+        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = global_texture_descriptor_set;
+        write.dstBinding = 1; // Binding 1
+        write.dstArrayElement = static_cast<uint32_t>(i);
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; // Cube 也是 SAMPLED_IMAGE
+        write.pImageInfo = &image_infos_cube[i]; // 指向稳定的 vector 元素地址
+
+        writes.push_back(write);
+    }
+
+    // 5. 执行批量更新
+    if (!writes.empty()) {
+        dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    }
 
     // Initialize vertex/index buffer vectors - pre-allocate with dummy buffers
     vertex_buffers_.clear();

@@ -8,6 +8,18 @@
 namespace mujoco{
 namespace mjbatch {
 
+// struct MaterialTexture {
+//     MaterialTexture(mujoco::mjbatch::LocalTexture &&src_image,
+//                     VkImageView src_view,
+//                     VkDeviceMemory src_backing)
+//         : image(std::move(src_image)), view(src_view), backing(src_backing)
+//     {
+//     }
+
+//     mujoco::mjbatch::LocalTexture image;
+//     VkImageView view;
+//     VkDeviceMemory backing;
+// };
 // RenderContext：a global context all scenes need to be batch rendered 
 
 struct RenderContext
@@ -33,6 +45,8 @@ struct RenderContext
     // Constructor - requires device and backend references
     RenderContext(Device &dev, Backend &be) 
         : device(dev), backend(be), allocator(dev,backend) {}
+
+    
 };
 
 // Initialize RenderContext with basic Vulkan resources for batch rendering

@@ -1,4 +1,4 @@
-cbuffer CameraData : register(b0) {
+cbuffer CameraData : register(b0, space0) {
     float4x4 view_proj;
     float3 camera_position;
     float _pad1;
@@ -12,15 +12,16 @@ cbuffer CameraData : register(b0) {
     float _pad4;
 };
 
-// Push constant for per-drawable data (model + material)
 struct PushConstants {
-    float4x4 model;           // offset 0, 64 bytes
-    float4 material_rgba;     // offset 64, 16 bytes
-    float3 material_specular; // offset 80, 12 bytes
-    float material_emission;  // offset 92, 4 bytes
-    float material_shininess; // offset 96, 4 bytes
-    int texture_id;           // offset 100, 4 bytes
-    float _pad1, _pad2;       // offset 104, 8 bytes
+    float4x4 model;
+    float4 material_rgba;
+    float3 material_specular;
+    float material_emission;
+    float material_shininess;
+    float material_reflectance;
+    
+    int texture_index; // 在对应数组(2D或Cube)中的索引
+    int texture_type;  // 0: Unlit/Color, 1: 2D Texture, 2: Cube Texture
 };
 
 [[vk::push_constant]]
@@ -40,26 +41,33 @@ struct VSOutput {
     float4 color : COLOR;
     float3 world_pos : WORLD_POS;
     float3 view_dir : VIEW_DIR;
+    float3 sample_vec : SAMPLE_VEC;
 };
 
 VSOutput VSMain(VSInput input) {
     VSOutput output;
     
-    // Transform to world space using model matrix from push constant
+    // Transform to world space
     float4 world_pos = mul(pushConst.model, float4(input.position, 1.0));
     output.world_pos = world_pos.xyz;
     
     // Transform to clip space
     output.position = mul(view_proj, world_pos);
     
-    // Transform normal to world space (assuming uniform scaling)
-    output.normal = normalize(mul((float3x3)pushConst.model, input.normal));
-   
+    // Transform normal with inverse transpose for non-uniform scaling
+    // For uniform scaling, this simplifies to (float3x3)model
+    float3x3 normal_matrix = (float3x3)pushConst.model;
+    output.normal = normalize(mul(normal_matrix, input.normal));
+    
+    // Pass through texture coordinates and vertex color
     output.texcoord = input.texcoord;
     output.color = input.color;
     
-    // Calculate view direction
+    // Calculate view direction in world space
     output.view_dir = normalize(camera_position - world_pos.xyz);
-     
+    
+    output.sample_vec = input.position; // For environment mapping
+
+    
     return output;
 }

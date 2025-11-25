@@ -54,21 +54,18 @@ struct Asset {
 };
 
 
-
 ObjectManager::ObjectManager(const mjModel* model,
                              const mjBatchConfig* config)
     : model_(model), config_(config) {
   // Use unified GeometryBuilder interface
-  shapes_[kLine] = GeometryBuilder::BuildLine();
-  shapes_[kBox] = GeometryBuilder::BuildBox(model->vis.quality.numquads);
-  shapes_[kLineBox] = GeometryBuilder::BuildLineBox();
-  shapes_[kCone] = GeometryBuilder::BuildCone(model->vis.quality.numstacks, model->vis.quality.numslices);
-  shapes_[kDisk] = GeometryBuilder::BuildDisk(model->vis.quality.numslices);
-  shapes_[kDome] = GeometryBuilder::BuildDome(model->vis.quality.numstacks / 2, model->vis.quality.numslices);
-  shapes_[kTube] = GeometryBuilder::BuildTube(model->vis.quality.numstacks, model->vis.quality.numslices);
   shapes_[kPlane] = GeometryBuilder::BuildPlane(model->vis.quality.numquads);
+  shapes_[kBox] = GeometryBuilder::BuildBox(model->vis.quality.numquads);
   shapes_[kSphere] = GeometryBuilder::BuildSphere(model->vis.quality.numstacks, model->vis.quality.numslices);
+  shapes_[kCapsule] = GeometryBuilder::BuildCapsule(model->vis.quality.numstacks, model->vis.quality.numslices);
+  shapes_[kEllipsoid] = GeometryBuilder::BuildSphere(model->vis.quality.numstacks, model->vis.quality.numslices);
+  shapes_[kCylinder] = GeometryBuilder::BuildCylinder(model->vis.quality.numstacks, model->vis.quality.numslices);
   
+
   // TODO: Load meshes and height fields on demand
 }
 
@@ -76,33 +73,50 @@ ObjectManager::~ObjectManager() {
 
 }
 
-// TODO: Implement Mesh Hfield and Texture uploads
+// TODO: Implement Texture uploads
 
 
 
 const GeometryBuffers* ObjectManager::GetMeshBuffer(int data_id) const {
-  // As defined by mjv_updateScene:
-  //   original mesh: mesh_id * 2
-  //   convex hull: (mesh_id * 2) + 1
+  
   const int mesh_id = data_id / 2;
-  if (data_id % 2 == 0) {
+  const bool is_convex = (data_id % 2 != 0);
+
+  if (!is_convex) {
+    // ---------------- 处理普通 Mesh ----------------
     auto it = meshes_.find(mesh_id);
     if (it != meshes_.end()) {
       return &it->second;
     }
-    // Build mesh on demand
+    
+    // 边界检查
     if (mesh_id >= 0 && mesh_id < model_->nmesh) {
+      // [FIX] 调用我们在 builtin.cc 中实现的 BuildMesh
       GeometryBuffers mesh = GeometryBuilder::BuildMesh(model_, mesh_id);
-      meshes_[mesh_id] = std::move(mesh);
-      return &meshes_[mesh_id];
+      
+      // 插入 Map 并返回引用
+      // 使用 emplace 避免拷贝
+      auto inserted = meshes_.emplace(mesh_id, std::move(mesh));
+      return &inserted.first->second;
     }
     return nullptr;
+
   } else {
+    // ---------------- 处理 Convex Hull ----------------
     auto it = convex_hulls_.find(mesh_id);
     if (it != convex_hulls_.end()) {
       return &it->second;
     }
-    // TODO: Build convex hull
+
+    // [FIX] 处理 TODO: 构建 Convex Hull
+    if (mesh_id >= 0 && mesh_id < model_->nmesh) {
+        // 通常凸包的几何数据可以用原始 Mesh 近似，或者 MuJoCo 有专门的 graph
+        // 这里我们复用 BuildConvexHull (在 builtin 中实现为调用 BuildMesh)
+        GeometryBuffers hull = GeometryBuilder::BuildConvexHull(model_, mesh_id);
+        
+        auto inserted = convex_hulls_.emplace(mesh_id, std::move(hull));
+        return &inserted.first->second;
+    }
     return nullptr;
   }
 }

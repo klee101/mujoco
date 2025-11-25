@@ -47,17 +47,21 @@ struct mjBatchConfig {
 };
 
 enum ShapeType {
-    kLine,
-    kLineBox,
     kPlane,
     kBox,
     kSphere,
-    kCone,
-    kDisk,
-    kDome,
-    kTube,
-    kNumShapes,
+    kCapsule,
+    kEllipsoid,
+    kCylinder,
+    kNumShapes
   };
+
+struct TextureData {
+  int width;
+  int height;
+  int components;  // number of color channels (e.g. 3 for RGB, 4 for RGBA)
+  std::vector<uint8_t> data;
+};
 
 // Creates and owns various filament objects based on the data in a mjrContext.
 class ObjectManager {
@@ -68,9 +72,9 @@ class ObjectManager {
 
   using SphericalHarmonics = float3[9];
 
-  // void UploadMesh(const mjModel* model, int id);
+  void UploadMesh(const mjModel* model, int id);
 
-  // void UploadTexture(const mjModel* model, int id);
+  void UploadTexture(const mjModel* model, int id);
 
   // void UploadHeightField(const mjModel* model, int id);
 
@@ -99,6 +103,9 @@ class ObjectManager {
   mutable std::unordered_map<int, GeometryBuffers> height_fields_;
   std::unordered_map<int, SphericalHarmonics> spherical_harmonics_;
 
+  // feat: create Skybox and texture
+  // std::vector<filament::Skybox*> skyboxes_;
+  mutable std::unordered_map<int, TextureData> textures_;
 };
 
 

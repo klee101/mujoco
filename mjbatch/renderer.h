@@ -16,6 +16,7 @@
 #include "memory.h"
 #include "scene.h"
 
+#define kMaxBindlessTextures 32
 // -----------------------------------------------------------------------------
 // Error Handling
 // -----------------------------------------------------------------------------
@@ -69,31 +70,37 @@ struct RenderStats {
     uint64_t frame_number = 0;
 };
 
-// -----------------------------------------------------------------------------
-// Uniform buffer structures
-// -----------------------------------------------------------------------------
-struct CameraUBO {
-    glm::mat4 view_proj;
-    glm::vec3 position;
-    float padding1;
-    glm::vec3 forward;
-    float padding2;
-    glm::vec3 up;
-    float padding3;
-    float near_plane;
-    float far_plane;
-    float fov;
-    float padding4;
+
+struct LightUBO {
+    mujoco::mjbatch::LightInfo lights[10];
+    uint32_t lightCount;
+    uint32_t pad[3];
 };
 
-struct MaterialUBO {
-    glm::vec4 rgba;
-    glm::vec3 specular;
-    float emission;
-    float shininess;
-    int texture_id;
-    float padding1;
-    float padding2;
+struct MaterialTexture {
+    MaterialTexture(mujoco::mjbatch::LocalTexture &&src_image,
+                    VkImageView src_view,
+                    VkDeviceMemory src_backing)
+        : image(std::move(src_image)), view(src_view), backing(src_backing)
+    {
+    }
+
+    mujoco::mjbatch::LocalTexture image;
+    VkImageView view;
+    VkDeviceMemory backing;
+};
+
+struct TextureMapping {
+    int type; // 0 = None, 1 = 2D, 2 = Cube
+    int index_in_array; // 在对应的 vector<MaterialTexture> 中的下标
+};
+
+// 函数的返回结果结构体
+struct LoadedTextureResources {
+    std::vector<MaterialTexture> textures_2d;
+    std::vector<MaterialTexture> textures_cube;
+    std::vector<TextureMapping> global_texture_lookup;
+    std::vector<mujoco::mjbatch::HostBuffer> host_buffers;
 };
 
 // Push constants: model transform + material data
@@ -103,8 +110,9 @@ struct PushConstants {
     glm::vec3 specular;       // 12 bytes
     float emission;           // 4 bytes
     float shininess;          // 4 bytes
-    int texture_id;           // 4 bytes
-    float _pad1, _pad2;       // 8 bytes padding
+    float reflectance;        // 4 bytes
+    int texture_index;          // 原 texture_id (表示在对应数组中的下标)
+    int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
 };
 // -----------------------------------------------------------------------------
 // Main Batch Renderer Class
@@ -159,6 +167,8 @@ private:
 
     // Helper functions
     VkShaderModule loadShaderModule(const std::string& shader_path);
+    LoadedTextureResources LoadMaterialTextures();
+
     std::vector<uint32_t> readSPIRV(const std::string& filename);
 
 private:
@@ -181,9 +191,14 @@ private:
     // Vulkan resources
     VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptor_sets_;
+
+    VkDescriptorSetLayout global_texture_set_layout = VK_NULL_HANDLE;  
+    VkDescriptorPool global_texture_descriptor_pool = VK_NULL_HANDLE;
+    VkDescriptorSet global_texture_descriptor_set;
 
     VkShaderModule vert_shader_module_ = VK_NULL_HANDLE;
     VkShaderModule frag_shader_module_ = VK_NULL_HANDLE;
@@ -206,6 +221,8 @@ private:
     // Vertex/index buffers per environment
     std::vector<mujoco::mjbatch::LocalBuffer> vertex_buffers_;
     std::vector<mujoco::mjbatch::LocalBuffer> index_buffers_;
+
+    // 这一部分内容在目前的程序中并没有被使用到
     std::vector<size_t> vertex_counts_;  // Number of vertices per environment
     std::vector<size_t> index_counts_;  // Number of indices per environment
     std::vector<size_t> vertex_buffer_sizes_;  // Buffer sizes in bytes
@@ -213,8 +230,14 @@ private:
 
     // Uniform buffers
     std::vector<mujoco::mjbatch::LocalBuffer> camera_uniform_buffers_;
-    std::vector<mujoco::mjbatch::LocalBuffer> material_uniform_buffers_;
     std::vector<mujoco::mjbatch::HostBuffer> camera_staging_buffers_;
+    
+    std::vector<mujoco::mjbatch::LocalBuffer> light_uniform_buffers_;
+    std::vector<mujoco::mjbatch::HostBuffer> light_staging_buffers_;
+
+    // feat: texture
+    LoadedTextureResources material_textures_;
+    VkSampler texture_sampler_;
 
     // Output buffers
     std::vector<unsigned char> rgb_buffer_;

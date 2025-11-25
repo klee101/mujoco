@@ -78,7 +78,7 @@ public:
   
   // Build mesh from MuJoCo mesh data
   static GeometryBuffers BuildMesh(const mjModel* model, int mesh_id);
-  
+  static GeometryBuffers BuildConvexHull(const mjModel* model, int mesh_id);
   // Build height field
   static GeometryBuffers BuildHeightField(const mjModel* model, int hfield_id);
 

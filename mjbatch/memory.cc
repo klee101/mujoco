@@ -52,24 +52,25 @@ static constexpr VkImageUsageFlags depthAttachmentUsage =
 
 };
 
+// TODO: Fix the deleter to actually free resources
 template <bool host_mapped>
 void AllocDeleter<host_mapped>::operator()(VkBuffer buffer) const
 {
     if (!alloc_) return;
 
     if (mem_ == VK_NULL_HANDLE) return;
-    return;
     // const Device &dev = alloc_->dev;
 
     // try {
-    //     dev.dt.unmapMemory(dev.hdl, mem_to_free);
+    //     dev.dt.unmapMemory(dev.hdl, mem_);
     // } catch (...) {
     //     // 记录错误但继续执行清理其他资源
     //     std::cerr << "Warning: Failed to unmap memory" << std::endl;
     // }
-    // BUGFIX: Segmentation fault
+    // // BUGFIX: Segmentation fault
     // dev.dt.destroyBuffer(dev.hdl, buffer, nullptr);
-    // dev.dt.freeMemory(dev.hdl, mem_to_free, nullptr);
+    // dev.dt.freeMemory(dev.hdl, mem_, nullptr);
+    return;
 }
 
 template <>
@@ -776,6 +777,55 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTexture3D(
     VkFormat fmt)
 {
     return makeTexture<3>(width, height, depth, mip_levels, fmt);
+}
+
+
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCube(
+    uint32_t size,
+    uint32_t mip_levels,
+    VkFormat fmt)
+{
+    return makeTextureCubeInternal(size, mip_levels, fmt);
+}
+
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCubeInternal(
+    uint32_t size,
+    uint32_t mip_levels,
+    VkFormat fmt)
+{
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;   // ⭐ 必须
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = fmt;
+    info.extent = { size, size, 1 };
+    info.mipLevels = mip_levels;
+    info.arrayLayers = 6;                               // ⭐ 6 个面
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage texture_img;
+    vkCreateImage(dev.hdl, &info, nullptr, &texture_img);
+
+    auto reqs = getImageMemReqs(dev, texture_img);
+
+    return {
+        LocalTexture{
+            size,
+            size,
+            mip_levels,
+            texture_img
+        },
+        TextureRequirements{
+            reqs.alignment,
+            reqs.size
+        }
+    };
 }
 
 template <int dims>

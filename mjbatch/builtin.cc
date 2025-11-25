@@ -18,6 +18,7 @@
 namespace mujoco {
 namespace mjbatch {
 
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -104,35 +105,67 @@ GeometryBuffers GeometryBuilder::BuildLine() {
 }
 
 // FIXED: BuildPlane with correct winding
+// BUGFIX: Plane not visible??
+
 GeometryBuffers GeometryBuilder::BuildPlane(int num_quads_per_axis) {
     GeometryBuffers result;
-    const float delta = 2.0f / num_quads_per_axis;
-    const float3 normal{0, 0, 1};
-    
-    // Generate vertices in row-major order (y varies fastest)
-    for (int y = 0; y <= num_quads_per_axis; ++y) {
-        for (int x = 0; x <= num_quads_per_axis; ++x) {
-            const float dx = -1.0f + delta * static_cast<float>(x);
-            const float dy = -1.0f + delta * static_cast<float>(y);
-            result.vertices.push_back(Vertex(
-                {dx, dy, 0},
-                normal,
-                {static_cast<float>(x) / num_quads_per_axis, 
-                 static_cast<float>(y) / num_quads_per_axis},
-                {1, 1, 1, 1}
-            ));
-        }
-    }
-    
-    // Generate indices with correct winding (CCW when viewed from +Z)
+    // 网格的半边长是 1.0，所以总宽度是 2.0。
+    const float total_width = 2.0f; 
+    // 每个小格的边长
+    const float delta = total_width / num_quads_per_axis; 
+    const float3 normal{0, 0, 1}; // 平面法线指向 +Z
+
     for (int y = 0; y < num_quads_per_axis; ++y) {
         for (int x = 0; x < num_quads_per_axis; ++x) {
-            const int base = y * (num_quads_per_axis + 1) + x;
-            const uint32_t a = base;
-            const uint32_t b = base + 1;
-            const uint32_t c = base + (num_quads_per_axis + 1) + 1;
-            const uint32_t d = base + (num_quads_per_axis + 1);
-            AppendQuadToVector(result.indices, a, b, c, d);
+            
+            const float dx_start = -1.0f + delta * static_cast<float>(x);
+            const float dy_start = -1.0f + delta * static_cast<float>(y);
+            
+            const uint32_t base_index = result.vertices.size(); 
+
+            // 顶点 A (左下角): 局部 UV (0, 0)
+            result.vertices.push_back(Vertex(
+                {dx_start, dy_start, 0}, 
+                normal, 
+                {0.0f, 0.0f}, 
+                {1, 1, 1, 1}
+            ));
+            
+            result.vertices.push_back(Vertex(
+                {dx_start + delta, dy_start, 0}, 
+                normal, 
+                {1.0f, 0.0f}, 
+                {1, 1, 1, 1}
+            ));
+
+            result.vertices.push_back(Vertex(
+                {dx_start + delta, dy_start + delta, 0}, 
+                normal, 
+                {1.0f, 1.0f}, 
+                {1, 1, 1, 1}
+            ));
+            
+            // 顶点 D (左上角): 局部 UV (0, 1)
+            result.vertices.push_back(Vertex(
+                {dx_start, dy_start + delta, 0}, 
+                normal, 
+                {0.0f, 1.0f}, 
+                {1, 1, 1, 1}
+            ));
+
+
+            const uint32_t a = base_index + 0;
+            const uint32_t b = base_index + 1;
+            const uint32_t c = base_index + 2;
+            const uint32_t d = base_index + 3;
+            
+            result.indices.push_back(a);
+            result.indices.push_back(d);
+            result.indices.push_back(c);
+            
+            result.indices.push_back(a);
+            result.indices.push_back(b);
+            result.indices.push_back(c);
         }
     }
     
@@ -554,53 +587,107 @@ GeometryBuffers GeometryBuilder::BuildFromType(int geom_type, const mjModel* mod
 
 GeometryBuffers GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
     GeometryBuffers result;
-    
+
     if (mesh_id < 0 || mesh_id >= model->nmesh) {
         return result;
     }
-    
-    // Get mesh addresses
+
+    // 1. 获取所有数据块的起始地址
     int vertadr = model->mesh_vertadr[mesh_id];
-    int vertnum = model->mesh_vertnum[mesh_id];
-    int normaladr = model->mesh_normaladr[mesh_id];
-    int normalnum = model->mesh_normalnum[mesh_id];
     int faceadr = model->mesh_faceadr[mesh_id];
     int facenum = model->mesh_facenum[mesh_id];
+    
+    int normaladr = model->mesh_normaladr[mesh_id];
     int texcoordadr = model->mesh_texcoordadr[mesh_id];
     bool has_texcoord = (texcoordadr >= 0);
-    
-    // Extract vertices
-    for (int i = 0; i < vertnum; ++i) {
-        const float* vert = model->mesh_vert + 3 * (vertadr + i);
-        float3 pos{vert[0], vert[1], vert[2]};
-        
-        // Get normal (may have different count than vertices)
-        float3 norm{0, 0, 1};
-        if (i < normalnum) {
-            const float* normal = model->mesh_normal + 3 * (normaladr + i);
-            norm = float3{normal[0], normal[1], normal[2]};
-        }
-        
-        // Get texture coordinates
-        float2 uv{0, 0};
-        if (has_texcoord && i < model->mesh_texcoordnum[mesh_id]) {
-            const float* texcoord = model->mesh_texcoord + 2 * (texcoordadr + i);
-            uv = float2{texcoord[0], texcoord[1]};
-        }
-        
-        result.vertices.push_back(Vertex(pos, norm, uv, {1, 1, 1, 1}));
-    }
-    
-    // Extract indices from faces
+
+    // 预分配内存 (Unrolled: 3 vertices per face)
+    result.vertices.reserve(facenum * 3);
+    result.indices.reserve(facenum * 3);
+
+    // 2. 遍历每一个面 (而不是遍历顶点)
     for (int i = 0; i < facenum; ++i) {
-        const int* face = model->mesh_face + 3 * (faceadr + i);
-        // MuJoCo mesh faces are relative to mesh vertex start, so we need to offset
-        result.indices.push_back(static_cast<uint32_t>(face[0]));
-        result.indices.push_back(static_cast<uint32_t>(face[1]));
-        result.indices.push_back(static_cast<uint32_t>(face[2]));
+        // 当前面的全局偏移
+        int global_face_idx = faceadr + i;
+        
+        // 获取当前面的 3 个顶点位置索引 (Pos Index) 
+        int p_idx[3];
+        int n_idx[3];
+        int uv_idx[3];
+
+        // 读取位置索引
+        p_idx[0] = model->mesh_face[3 * global_face_idx + 0];
+        p_idx[1] = model->mesh_face[3 * global_face_idx + 1];
+        p_idx[2] = model->mesh_face[3 * global_face_idx + 2];
+
+        // 读取法线索引
+        if (normaladr >= 0 && model->mesh_facenormal) {
+            n_idx[0] = model->mesh_facenormal[3 * global_face_idx + 0];
+            n_idx[1] = model->mesh_facenormal[3 * global_face_idx + 1];
+            n_idx[2] = model->mesh_facenormal[3 * global_face_idx + 2];
+        } else {
+            // Fallback: 如果没有法线索引，通常假设法线索引 = 位置索引 (平滑着色)
+            n_idx[0] = p_idx[0]; n_idx[1] = p_idx[1]; n_idx[2] = p_idx[2];
+        }
+
+        // 读取 UV 索引 (如果有)
+        if (has_texcoord && model->mesh_facetexcoord) {
+            uv_idx[0] = model->mesh_facetexcoord[3 * global_face_idx + 0];
+            uv_idx[1] = model->mesh_facetexcoord[3 * global_face_idx + 1];
+            uv_idx[2] = model->mesh_facetexcoord[3 * global_face_idx + 2];
+        } else {
+            uv_idx[0] = -1; uv_idx[1] = -1; uv_idx[2] = -1;
+        }
+
+        // 3. 构建三角形的 3 个顶点
+        for (int v = 0; v < 3; ++v) {
+            Vertex vertex;
+
+            // A. Position
+            // 注意：mesh_vert 是 float 数组，stride 为 3
+            // 索引是：基地址 + 3 * 局部索引
+            const float* p_ptr = model->mesh_vert + 3 * (vertadr + p_idx[v]);
+            vertex.position[0] = p_ptr[0];
+            vertex.position[1] = p_ptr[1];
+            vertex.position[2] = p_ptr[2];
+
+            // B. Normal
+            if (normaladr >= 0) {
+                // 法线也是全局大数组，索引：基地址 + 3 * 法线索引
+                const float* n_ptr = model->mesh_normal + 3 * (normaladr + n_idx[v]);
+                vertex.normal[0] = n_ptr[0];
+                vertex.normal[1] = n_ptr[1];
+                vertex.normal[2] = n_ptr[2];
+            } else {
+                vertex.normal[0] = 0; vertex.normal[1] = 0; vertex.normal[2] = 1;
+            }
+
+            // C. UV
+            if (has_texcoord && uv_idx[v] >= 0) {
+                // UV 是 float 数组，stride 为 2
+                const float* uv_ptr = model->mesh_texcoord + 2 * (texcoordadr + uv_idx[v]);
+                vertex.texcoord[0] = uv_ptr[0];
+                vertex.texcoord[1] = uv_ptr[1];
+            } else {
+                vertex.texcoord[0] = 0; vertex.texcoord[1] = 0;
+            }
+            
+            // D. Color (Default white)
+            // vertex.color = {1, 1, 1, 1}; 
+
+            // 添加到 Buffer
+            result.vertices.push_back(vertex);
+            
+            // 线性生成索引 (0, 1, 2, 3, 4, 5...)
+            result.indices.push_back(static_cast<uint32_t>(result.vertices.size() - 1));
+        }
     }
-    
+
     return result;
+}
+
+GeometryBuffers GeometryBuilder::BuildConvexHull(const mjModel* model, int mesh_id) {
+    return BuildMesh(model, mesh_id);
 }
 
 GeometryBuffers GeometryBuilder::BuildHeightField(const mjModel* model, int hfield_id) {

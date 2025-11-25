@@ -198,5 +198,7 @@ void cleanupRenderContext(RenderContext &ctx)
     // MemoryAllocator will clean itself up via destructor
 }
 
+
+
 }} // namespace mujoco::mjbatch
 

@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <vector>
+#include <thread>
+#include <chrono>
 #include <string>
 
 static bool write_ppm(const std::string& path, const unsigned char* data, int w, int h) {
@@ -16,7 +18,8 @@ static bool write_ppm(const std::string& path, const unsigned char* data, int w,
 
 int main() {
   // ---- 1) 加载 humanoid.xml ----
-  const std::string xml_path = "./model/humanoid.xml";
+
+  const std::string xml_path = "./model/lift.xml";
 
   char error[1024] = {0};
   const mjModel* m = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
@@ -46,8 +49,14 @@ int main() {
     datas[i] = mj_makeData(m);
     mj_forward(m, datas[i]);
   }
+  // 物理仿真
+  for(int step=0; step<600; step++) {
+    for (int i = 0; i < cfg.batch_size; ++i) {
+      mj_step(m, datas[i]);
+    }
+  }
 
-  // ---- 4) Render 一帧 ----
+  // ---- 4) Render 1帧 ----
   auto result = renderer->Render(datas.data(), nullptr);
   if (!result) {
     std::fprintf(stderr, "[humanoid] Render failed: %s\n", result.message.c_str());

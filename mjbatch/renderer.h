@@ -114,13 +114,20 @@ struct PushConstants {
     int texture_index;          // 原 texture_id (表示在对应数组中的下标)
     int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
 };
+
+struct MeshEntry {
+    uint32_t vertex_offset;
+    uint32_t index_offset;
+    uint32_t vertex_count;
+    uint32_t index_count;
+};
 // -----------------------------------------------------------------------------
 // Main Batch Renderer Class
 // -----------------------------------------------------------------------------
 class BatchRenderer {
 public:
     static std::unique_ptr<BatchRenderer> Create(
-        const mjModel* m, 
+        std::vector<mjModel*> models, 
         const BatchRendererConfig& config = BatchRendererConfig());
 
     ~BatchRenderer();
@@ -144,7 +151,7 @@ public:
     bool IsValid() const { return initialized_; }
 
 private:
-    BatchRenderer(const mjModel* m, const BatchRendererConfig& config);
+    BatchRenderer(std::vector<mjModel*> models, const BatchRendererConfig& config);
 
     bool Initialize();
     void Cleanup();
@@ -171,8 +178,12 @@ private:
 
     std::vector<uint32_t> readSPIRV(const std::string& filename);
 
+    // feat: mesh deduplication
+    void InitGlobalGeometry();
+
 private:
-    const mjModel* model_;
+    std::vector<mjModel*> models_;
+
     BatchRendererConfig config_;
 
     // Backend and device
@@ -218,15 +229,10 @@ private:
     // Staging buffers for readback
     std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;
 
-    // Vertex/index buffers per environment
-    std::vector<mujoco::mjbatch::LocalBuffer> vertex_buffers_;
-    std::vector<mujoco::mjbatch::LocalBuffer> index_buffers_;
-
-    // 这一部分内容在目前的程序中并没有被使用到
-    std::vector<size_t> vertex_counts_;  // Number of vertices per environment
-    std::vector<size_t> index_counts_;  // Number of indices per environment
-    std::vector<size_t> vertex_buffer_sizes_;  // Buffer sizes in bytes
-    std::vector<size_t> index_buffer_sizes_;  // Buffer sizes in bytes
+    // [ADD] +++ 添加全局 Buffer 和 缓存表
+    std::optional<mujoco::mjbatch::LocalBuffer> global_vertex_buffer_;
+    std::optional<mujoco::mjbatch::LocalBuffer> global_index_buffer_;
+    std::unordered_map<std::string, MeshEntry> global_mesh_cache_;
 
     // Uniform buffers
     std::vector<mujoco::mjbatch::LocalBuffer> camera_uniform_buffers_;
@@ -238,6 +244,9 @@ private:
     // feat: texture
     LoadedTextureResources material_textures_;
     VkSampler texture_sampler_;
+    // 新增成员变量：存储每个模型的纹理全局起始索引
+    // texture_offsets_[i] 表示第 i 个模型在 global_texture_lookup 中的起始位置
+    std::vector<int> texture_offsets_;
 
     // Output buffers
     std::vector<unsigned char> rgb_buffer_;

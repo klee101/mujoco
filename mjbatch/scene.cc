@@ -7,20 +7,20 @@ namespace mujoco {
 namespace mjbatch {
 namespace {
 
-// 1. 将 MuJoCo 的 geom->type 转换为 ObjectManager 的 ShapeType
-ShapeType GetBatchShapeType(int mj_geom_type) {
+std::string GetBuiltinMeshName(int mj_geom_type) {
     switch (mj_geom_type) {
-        case mjGEOM_PLANE:    return kPlane;
-        case mjGEOM_HFIELD:   return kNumShapes; // 特殊处理
-        case mjGEOM_SPHERE:   return kSphere;
-        case mjGEOM_CAPSULE:  return kCapsule;      // MuJoCo Capsule 通常用 Tube + 半圆盖模拟，或者用胶囊体
-        case mjGEOM_ELLIPSOID:return kSphere;    // 椭球通过缩放球体实现
-        case mjGEOM_CYLINDER: return kCylinder;      // 这里假设 kTube 对应圆柱体
-        case mjGEOM_BOX:      return kBox;
-        case mjGEOM_MESH:     return kBox; // 特殊处理
-        default:              return kBox;       // 默认回退
+        case mjGEOM_PLANE:    return "__builtin_plane";
+        case mjGEOM_HFIELD:   return "__builtin_hfield"; // HField 较特殊，可能需要特殊 ID
+        case mjGEOM_SPHERE:   return "__builtin_sphere";
+        case mjGEOM_CAPSULE:  return "__builtin_capsule";
+        case mjGEOM_ELLIPSOID:return "__builtin_sphere"; // 椭球复用球体 + 缩放
+        case mjGEOM_CYLINDER: return "__builtin_cylinder";
+        case mjGEOM_BOX:      return "__builtin_box";
+        default:              return "__builtin_box";    // Fallback
     }
 }
+
+
 
 // 2. 根据几何类型解析 geom->size 并计算缩放向量
 // 假设 float3 是你们 utils.h 中定义的结构体
@@ -60,7 +60,6 @@ float3 GetGeomScale(int type, const float* size) {
 
 Scene::Scene(const mjModel* model, const mjvScene* scene)
     : model_(model) {
-    object_manager_ = std::make_unique<ObjectManager>(model, nullptr);
     ExtractGeometries(model, scene);
     ExtractLight(scene);
     ExtractMaterials(model, scene);
@@ -78,12 +77,13 @@ void Scene::Update(const mjModel* model, const mjvScene* scene, const mjData* da
         const mjvGeom* geom = scene->geoms + i;
         
         // Skip flex and skin geometries (same as in ExtractGeometries)
-        if (geom->type == mjGEOM_FLEX || geom->type == mjGEOM_SKIN) {
-            continue;
-        }
-        
+        if (geom->type == mjGEOM_FLEX || geom->type == mjGEOM_SKIN || 
+            geom->type == mjGEOM_ARROW || geom->type == mjGEOM_LABEL) continue;
+        Drawable& drawable = drawables_[geom_idx];
+
+
         // Update only the transform
-        drawables_[geom_idx].transform = BuildTransform(geom);
+        drawable.transform = BuildTransform(geom);
 
         if(geom->type == mjGEOM_MESH || geom->type == mjGEOM_HFIELD) {
             geom_idx++;
@@ -93,7 +93,7 @@ void Scene::Update(const mjModel* model, const mjvScene* scene, const mjData* da
         // Apply size scaling to transform
         float3 size = ReadFloat3(geom->size);
         size = GetGeomScale(geom->type, geom->size);
-        drawables_[geom_idx].transform = drawables_[geom_idx].transform * scaling(size);
+        drawable.transform = drawable.transform * scaling(size);
         
         geom_idx++;
     }
@@ -119,12 +119,15 @@ void Scene::ExtractGeometries(const mjModel* model, const mjvScene* scene) {
             geom->type == mjGEOM_ARROW || geom->type == mjGEOM_LABEL) continue;
 
         Material mat = ExtractMaterialFromGeom(model, geom);
-        if (mat.rgba.a < 0.01f) continue; 
 
+        // NOTE：here bug may exist when process the transparent objects
         Drawable drawable;
         drawable.geom_id = i;
         drawable.material = mat;
         drawable.visible = true;
+        if (mat.rgba.a < 0.01f) {
+            drawable.visible = false;
+        }
         
         // [Step A] 构建基础的世界变换矩阵 (Geom Transform)
         // 这代表了物体在世界坐标系中的位置和姿态
@@ -133,41 +136,34 @@ void Scene::ExtractGeometries(const mjModel* model, const mjvScene* scene) {
         // 2. Geometry Handling & Asset Transformation
         if (geom->type == mjGEOM_MESH) {
             int mesh_id = geom->dataid;
-            // FIX: mesh_id dont need to *2 !!!
-            const GeometryBuffers* mesh_ptr = object_manager_->GetMeshBuffer(mesh_id);
-            
-            if (mesh_ptr) {
-                drawable.geometry = mesh_ptr; 
+            drawable.mesh_id = mesh_id;
+            int mesh_idx = mesh_id / 2; // Mesh ID in MuJoCo is 2*index or 2*index+1 (hull)
+
+            // FIX: mesh_id dont need to *2 !!! 
+            // mesh_id 16 represents mesh 8
+            // mesh_id 17 represents mesh 8 hull
+            // in GetMeshBuffer, we do mesh_id / 2 to get index
+            if (model->names && model->name_meshadr[mesh_idx] >= 0) {
+                drawable.global_mesh_name = std::string(model->names + model->name_meshadr[mesh_idx]);
             } else {
-                continue; // Mesh data missing
+                drawable.global_mesh_name = "mesh_" + std::to_string(mesh_id);
             }
         } 
         else if (geom->type == mjGEOM_HFIELD) {
-             int hfield_id = geom->dataid;
-             const GeometryBuffers* hfield_ptr = object_manager_->GetHeightFieldBuffer(hfield_id);
-             if (hfield_ptr) {
-                 drawable.geometry = hfield_ptr;
-                 // HeightField 通常不需要 mesh_pos/quat 这种资源变换，
-                 // 它的空间位置由 geom->pos 决定，尺寸由 model->hfield_size 决定(需在 GeometryBuilder 处理或在此缩放)
-             } else {
-                 continue;
-             }
+            //  int hfield_id = geom->dataid;
+             drawable.mesh_id = -1;
+             continue;
         } 
         else {
             // --- Primitives (Box, Sphere, etc.) ---
-            mjbatch::ShapeType shape_type = GetBatchShapeType(geom->type);
-            const GeometryBuffers* shape_ptr = object_manager_->GetShapeBuffer(shape_type);
-            
-            if (shape_ptr) {
-                drawable.geometry = shape_ptr;
+
+            drawable.mesh_id = -1; // Not a mesh
+            drawable.global_mesh_name = GetBuiltinMeshName(geom->type);
                 
-                // 基础几何体只有 Scale (size) 变换，没有 Asset Offset
-                float3 scale_vec = GetGeomScale(geom->type, geom->size);
-                if (scale_vec.x > 1e-6f) {
-                    drawable.transform = drawable.transform * scaling(scale_vec);
-                }
-            } else {
-                continue;
+            // 基础几何体只有 Scale (size) 变换，没有 Asset Offset
+            float3 scale_vec = GetGeomScale(geom->type, geom->size);
+            if (scale_vec.x > 1e-6f) {
+                drawable.transform = drawable.transform * scaling(scale_vec);
             }
         }
         
@@ -463,60 +459,5 @@ mat4 Scene::BuildTransform(const mjvGeom* geom) {
     return fromRotationTranslation(rotation, translation);
 }
 
-size_t Scene::GetTotalVertexCount() const {
-    size_t count = 0;
-    for (const auto& drawable : drawables_) {
-        count += drawable.geometry->GetVertexCount();
-    }
-    return count;
-}
-
-size_t Scene::GetTotalIndexCount() const {
-    size_t count = 0;
-    for (const auto& drawable : drawables_) {
-        count += drawable.geometry->GetIndexCount();
-    }
-    return count;
-}
-
-void Scene::GetCombinedBuffers(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) const {
-    vertices.clear();
-    indices.clear();
-    
-    vertices.reserve(GetTotalVertexCount());
-    indices.reserve(GetTotalIndexCount());
-    
-    uint32_t vertex_offset = 0;
-    
-    for (const auto& drawable : drawables_) {
-        if (!drawable.visible) continue;
-        
-        // Add vertices with material color applied
-        for (const auto& vertex : drawable.geometry->vertices) {
-            Vertex v = vertex;
-            // Apply material color
-            v.color = drawable.material.rgba;
-            vertices.push_back(v);
-        }
-        
-        // Add indices with offset
-        for (uint32_t idx : drawable.geometry->indices) {
-            indices.push_back(idx);
-        }
-        
-        vertex_offset += static_cast<uint32_t>(drawable.geometry->vertices.size());
-        
-        // examine drawable vertex index tex and material
-        // printf("Drawable geom_id=%d: vtx=%zu idx=%zu tex_id=%d rgba=(%.2f, %.2f, %.2f, %.2f)\n",
-        //        drawable.geom_id,
-        //        drawable.geometry.GetVertexCount(),
-        //        drawable.geometry.GetIndexCount(),
-        //        drawable.material.texture_id,
-        //        drawable.material.rgba.x,
-        //        drawable.material.rgba.y,
-        //        drawable.material.rgba.z,
-        //        drawable.material.rgba.w);
-    }
-}
 
 }}  // namespace mujoco::mjbatch

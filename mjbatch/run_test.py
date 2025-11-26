@@ -28,7 +28,7 @@ def main():
         print("\n步骤3: 转换图像格式...")
         subprocess.run([
             "python3", "-c", 
-            "from PIL import Image; Image.open('humanoid.ppm').save('humanoid.png')"
+            "from PIL import Image; Image.open('merged_result.ppm').save('merged_result.png')"
         ], check=True)
         
         print("\n✅ 所有任务完成!")

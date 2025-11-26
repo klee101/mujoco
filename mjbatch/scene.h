@@ -132,14 +132,24 @@ struct LightInfo {
     }
 };
 
-// Render-ready drawable object
+// [MODIFIED] Render-ready drawable object
+// 不再持有几何数据指针，而是持有“Key”用于全局查找
 struct Drawable {
-    const GeometryBuffers* geometry;  // Vertex/index data
-    mat4 transform;            // Model matrix
-    Material material;         // Material properties
-    int geom_id;               // Original MuJoCo geom ID
-    bool visible;              // Visibility flag
+    // Identify the geometry in the Global Buffer
+    // 对于 Mesh，这是 xml 中的 mesh name
+    // 对于 Builtin，这是预定义的名称 (e.g., "__builtin_box")
+    std::string global_mesh_name; 
+
+    mat4 transform;        // Model matrix (World Space)
+    Material material;     // Material properties
+    
+    // Debug / Logic info
+    int geom_id;           // Original MuJoCo geom ID
+    int32_t mesh_id;       // -1 if not a mesh (primitive)
+    bool visible;          // Visibility flag
 };
+
+
 
 // Texture information
 struct TextureInfo {
@@ -161,17 +171,13 @@ public:
     void Update(const mjModel* model, const mjvScene* scene, const mjData* data);
 
     // Get render-ready data
+// Accessors
     const std::vector<Drawable>& GetDrawables() const { return drawables_; }
     const CameraInfo& GetCamera() const { return camera_info_; }
-    const std::vector<TextureInfo>& GetTextures() const { return textures_; }
     const std::vector<LightInfo>& GetLights() const { return lights_; }
-    
-    // Get total vertex/index counts for buffer allocation
-    size_t GetTotalVertexCount() const;
-    size_t GetTotalIndexCount() const;
-    
-    // Get combined vertex/index buffers (for single buffer rendering)
-    void GetCombinedBuffers(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) const;
+    // 纹理通常在 Init 阶段由 BatchRenderer 统一处理，Scene 中保留它是为了方便查找
+    const std::vector<TextureInfo>& GetTextures() const { return textures_; }
+
     void UpdateCameraFromSimulation(const mjModel* m, const mjData* d, int cam_id, float aspect_ratio);
     int FindCameraID(const mjModel* m, const char* cam_name);
     CameraUBO GetCameraUBO() const {
@@ -212,8 +218,6 @@ private:
     std::vector<LightInfo> lights_;
     std::vector<TextureInfo> textures_;
     
-    // Object manager for geometry caching
-    std::unique_ptr<ObjectManager> object_manager_;
     
     // Internal extraction functions
     void ExtractGeometries(const mjModel* model, const mjvScene* scene);

@@ -92,6 +92,7 @@ private:
 
 class LocalBuffer {
 public:
+    // NOTE: may need to check NULL_HANDLE when used
     LocalBuffer(const LocalBuffer &) = delete;
     LocalBuffer(LocalBuffer &&o);
     ~LocalBuffer();

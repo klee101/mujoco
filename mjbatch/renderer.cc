@@ -404,7 +404,7 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
             finish_prepare.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             finish_prepare.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             finish_prepare.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            // layerCount 依然是 layers (1 或 6)
+
 
             dev.dt.cmdPipelineBarrier(cmdbuf,
                     VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -691,14 +691,11 @@ bool BatchRenderer::Initialize() {
         LOG(config_, "Initialize(): CreatePipeline failed");
         return false;
     }
+
     if (!CreateFramebuffers()) {
         LOG(config_, "Initialize(): CreateFramebuffers failed");
         return false;
     }
-    // if (!CreateBuffers()) {
-    //     LOG(config_, "Initialize(): CreateBuffers failed");
-    //     return false;
-    // }
 
     InitGlobalGeometry();
 
@@ -716,7 +713,6 @@ bool BatchRenderer::Initialize() {
         mjv_defaultScene(&res.scene);
         mjv_makeScene(models_[i], &res.scene, 2000);
 
-        mjv_defaultFreeCamera(models_[i], &res.camera);
         // Scene will be created in UpdateScenes when we have actual data
     }
 

@@ -69,7 +69,7 @@ int main() {
   }
 
   // 物理仿真 (让物体动起来一点)
-  for(int step=0; step<0; step++) {
+  for(int step=0; step<100; step++) {
     for (int i = 0; i < cfg.batch_size; ++i) {
       mj_step(models[i], datas[i]);
     }

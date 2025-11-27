@@ -111,8 +111,8 @@ struct PushConstants {
     float emission;           // 4 bytes
     float shininess;          // 4 bytes
     float reflectance;        // 4 bytes
-    int texture_index;          // 原 texture_id (表示在对应数组中的下标)
-    int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
+    int texture_index;        // texture_id (表示在对应数组中的下标)
+    int texture_type;         // (-1: None, 0: 2D, 1: Cube)
 };
 
 struct MeshEntry {

@@ -136,7 +136,7 @@ struct LightInfo {
 // 不再持有几何数据指针，而是持有“Key”用于全局查找
 struct Drawable {
     // Identify the geometry in the Global Buffer
-    // 对于 Mesh，这是 xml 中的 mesh name
+    // 对于 Mesh，这是 xml 中的 mesh name   
     // 对于 Builtin，这是预定义的名称 (e.g., "__builtin_box")
     std::string global_mesh_name; 
 

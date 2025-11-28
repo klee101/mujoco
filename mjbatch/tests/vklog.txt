@@ -1,0 +1,951 @@
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage:  43.51 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage:  56.98 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 134.15 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 177.66 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 191.13 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 268.30 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 311.81 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 325.28 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 402.45 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 445.96 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 459.43 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 536.60 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 580.11 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 593.58 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 670.75 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 714.26 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 727.73 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 804.90 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 848.41 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 861.88 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 939.05 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 982.56 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 996.03 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1073.20 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x11b01) [0x568862f19b01]
+    #5 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #6 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #7 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #9 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+[BatchRenderer] CreatePipeline(): pipeline created
+[BatchRenderer] CreateFramebuffers(): framebuffers created
+[BatchRenderer] InitGlobalGeometry(): Starting mesh deduplication and upload...
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  25.67 MB <<<
+[vk_stats] Total Usage: 1118.87 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x40a40) [0x568862f48a40]
+    #3 ./bin/benchmark_test(+0x40c3e) [0x568862f48c3e]
+    #4 ./bin/benchmark_test(+0x108de) [0x568862f188de]
+    #5 ./bin/benchmark_test(+0x11ceb) [0x568862f19ceb]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  25.67 MB <<<
+[vk_stats] Total Usage: 1146.96 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x40f16) [0x568862f48f16]
+    #3 ./bin/benchmark_test(+0x410aa) [0x568862f490aa]
+    #4 ./bin/benchmark_test(+0x109aa) [0x568862f189aa]
+    #5 ./bin/benchmark_test(+0x11ceb) [0x568862f19ceb]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+[BatchRenderer] InitGlobalGeometry(): Upload complete. Total Verts: 560808, Total Idx: 632016
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1192.89 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1206.37 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1283.54 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1327.04 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1340.52 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1417.69 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1461.19 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1474.67 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1551.84 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1595.34 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1608.82 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1685.99 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1729.49 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1742.97 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1820.14 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1863.64 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 1877.12 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 1954.29 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 1997.79 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 2011.27 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 2088.44 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+Extracted texture ID 0: 256x1536, Channels=4, Type=2
+Extracted texture ID 1: 255x255, Channels=4, Type=0
+Extracted texture ID 2: 1181x1181, Channels=4, Type=1
+Extracted texture ID 3: 660x660, Channels=4, Type=1
+Extracted texture ID 4: 880x880, Channels=4, Type=0
+Extracted texture ID 5: 512x3072, Channels=4, Type=1
+Extracted texture ID 6: 1450x1450, Channels=4, Type=1
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  34.69 MB <<<
+[vk_stats] Total Usage: 2131.94 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  11.81 MB <<<
+[vk_stats] Total Usage: 2145.42 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+
+[vk_stats] >>> LARGE ALLOC DETECTED:  51.19 MB <<<
+[vk_stats] Total Usage: 2222.59 MB
+  [Call Stack]:
+    #0 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z15print_callstackv+0x3a) [0x772c9af8276a] : print_callstack()
+    #1 /home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so(_Z23Hooked_vkAllocateMemoryP10VkDevice_TPK20VkMemoryAllocateInfoPK21VkAllocationCallbacksPP16VkDeviceMemory_T+0x214) [0x772c9af82af4] : Hooked_vkAllocateMemory(VkDevice_T*, VkMemoryAllocateInfo const*, VkAllocationCallbacks const*, VkDeviceMemory_T**)
+    #2 ./bin/benchmark_test(+0x418ee) [0x568862f498ee]
+    #3 ./bin/benchmark_test(+0xf061) [0x568862f17061]
+    #4 ./bin/benchmark_test(+0x18a7f) [0x568862f20a7f]
+    #5 ./bin/benchmark_test(+0x11cfa) [0x568862f19cfa]
+    #6 ./bin/benchmark_test(+0xc6df) [0x568862f146df]
+    #7 ./bin/benchmark_test(+0x5428) [0x568862f0d428]
+    #8 /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca) [0x772c9a22a1ca]
+    #9 /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b) [0x772c9a22a28b]
+    #10 ./bin/benchmark_test(+0x3c05) [0x568862f0bc05]
+----------------------------------------------------------
+
+[BatchRenderer] CreateBuffers(): buffers created
+[BatchRenderer] Initialize(): success
+[Init] Renderer initialized in 1529.67 ms
+[Run] Warming up (5 frames)...
+[Run] Running Benchmark (10 frames)...
+   Step 0/10 | Last Frame: 8.91 ms
+
+============ RESULTS ============
+Backend:      Current System
+Frames:       10
+Throughput:   110.91 FPS
+Latency (Avg): 9.016 ms
+Latency (Min): 8.909 ms
+Latency (Max): 9.062 ms
+Latency (P99): 9.062 ms
+=================================
+[Info] Saved sample image to benchmark_sample_0.ppm

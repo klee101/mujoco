@@ -13,11 +13,11 @@
 #include <algorithm>
 
 // ---- Benchmark 配置 ----
-const int BATCH_SIZE = 32;        // ⚠️ 在这里修改测试规模 (例如 64, 128, 512)
+const int BATCH_SIZE = 8;        // ⚠️ 在这里修改测试规模 (例如 64, 128, 512)
 const int FRAME_WIDTH = 640;       // VLA 常用分辨率
 const int FRAME_HEIGHT = 480;
-const int BENCHMARK_STEPS = 1000;  // 测试总帧数
-const int WARMUP_STEPS = 50;       // 热身帧数 (不计入统计)
+const int BENCHMARK_STEPS = 10;  // 测试总帧数
+const int WARMUP_STEPS = 5;       // 热身帧数 (不计入统计)
 const std::string MODEL_XML = "./model/lift.xml"; // 测试用的模型
 
 // PPM 写入函数 (用于验证渲染结果是否正确)

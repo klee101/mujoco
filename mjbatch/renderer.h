@@ -111,8 +111,8 @@ struct PushConstants {
     float emission;           // 4 bytes
     float shininess;          // 4 bytes
     float reflectance;        // 4 bytes
-    int texture_index;        // texture_id (表示在对应数组中的下标)
-    int texture_type;         // (-1: None, 0: 2D, 1: Cube)
+    int texture_index;          // 原 texture_id (表示在对应数组中的下标)
+    int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
 };
 
 struct MeshEntry {
@@ -121,35 +121,6 @@ struct MeshEntry {
     uint32_t vertex_count;
     uint32_t index_count;
 };
-
-// feat：SSBO
-// 1. Dynamic Data (Updated every frame) - Per Instance
-struct InstanceTransform {
-    glm::mat4 model; // 64 bytes
-};
-
-// 2. Static Data (Uploaded once or rarely) - Per Instance
-struct InstanceMaterial {
-    glm::vec4 rgba;          // 16
-    glm::vec3 specular;      // 12
-    float emission;          // 4
-    float shininess;         // 4
-    float reflectance;       // 4
-    int texture_index;       // 4
-    int texture_type;        // 4 0: None, 1: 2D, 2: Cube
-    int batch_id;            // 4 bytes padding to align to 16 bytes
-    int pad[3];              // 12 bytes padding
-    // Total: 64 bytes. 16-byte aligned.
-};
-
-// [ADDED] Helper struct for Indirect Draw (Optional but good practice, here we use direct DrawIndexed for simplicity first)
-// But we need a structure to organize the draw calls on CPU
-struct DrawCommand {
-    std::string mesh_name;
-    uint32_t instance_count;
-    uint32_t first_instance_index; // Offset into the SSBO arrays
-};
-
 // -----------------------------------------------------------------------------
 // Main Batch Renderer Class
 // -----------------------------------------------------------------------------
@@ -163,6 +134,9 @@ public:
 
     BatchRenderer(const BatchRenderer&) = delete;
     BatchRenderer& operator=(const BatchRenderer&) = delete;
+    BatchRenderer(BatchRenderer&&) noexcept;
+    BatchRenderer& operator=(BatchRenderer&&) noexcept;
+
     // Core Rendering Interface
     RenderResult Render(mjData** data_array, const int* camera_ids = nullptr);
 
@@ -229,6 +203,10 @@ private:
     VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
 
+    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptor_sets_;
+
     VkDescriptorSetLayout global_texture_set_layout = VK_NULL_HANDLE;  
     VkDescriptorPool global_texture_descriptor_pool = VK_NULL_HANDLE;
     VkDescriptorSet global_texture_descriptor_set;
@@ -237,12 +215,11 @@ private:
     VkShaderModule frag_shader_module_ = VK_NULL_HANDLE;
 
     // Framebuffers and images for batch rendering
-    VkFramebuffer global_framebuffer_ = VK_NULL_HANDLE;
-    
-    mujoco::mjbatch::LocalImage global_color_image_ = mujoco::mjbatch::LocalImage::makeEmpty();
-    mujoco::mjbatch::LocalImage global_depth_image_ = mujoco::mjbatch::LocalImage::makeEmpty();
-    VkImageView global_color_view_ = VK_NULL_HANDLE;
-    VkImageView global_depth_view_ = VK_NULL_HANDLE;
+    std::vector<VkFramebuffer> framebuffers_;
+    std::vector<mujoco::mjbatch::LocalImage> color_images_;
+    std::vector<mujoco::mjbatch::LocalImage> depth_images_;
+    std::vector<VkImageView> color_image_views_;
+    std::vector<VkImageView> depth_image_views_;
 
     // Command buffers and synchronization
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
@@ -258,18 +235,11 @@ private:
     std::unordered_map<std::string, MeshEntry> global_mesh_cache_;
 
     // Uniform buffers
-    std::optional<mujoco::mjbatch::LocalBuffer> global_camera_buffer_;
-    std::optional<mujoco::mjbatch::HostBuffer> global_camera_staging_;
-
-    std::optional<mujoco::mjbatch::LocalBuffer> global_light_buffer_;
-    std::optional<mujoco::mjbatch::HostBuffer> global_light_staging_;
-
-    // [MODIFIED] Update Descriptor Set Layout to include SSBOs
-    VkDescriptorSetLayout camlight_ssbo_layout_ = VK_NULL_HANDLE;
-    VkDescriptorSet camlight_ssbo_set_ = VK_NULL_HANDLE; // If we only use one set for all batches, or vector if per-batch logic persists.
-    // Suggestion: Make a per-frame SSBO descriptor set.
-    VkDescriptorPool camlight_descriptor_pool_ = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSet> camlight_descriptor_sets_;
+    std::vector<mujoco::mjbatch::LocalBuffer> camera_uniform_buffers_;
+    std::vector<mujoco::mjbatch::HostBuffer> camera_staging_buffers_;
+    
+    std::vector<mujoco::mjbatch::LocalBuffer> light_uniform_buffers_;
+    std::vector<mujoco::mjbatch::HostBuffer> light_staging_buffers_;
 
     // feat: texture
     LoadedTextureResources material_textures_;
@@ -277,24 +247,6 @@ private:
     // 新增成员变量：存储每个模型的纹理全局起始索引
     // texture_offsets_[i] 表示第 i 个模型在 global_texture_lookup 中的起始位置
     std::vector<int> texture_offsets_;
-
-    // [ADDED] SSBO Buffers for Instancing
-    // We need one buffer for Transforms (CPU -> GPU every frame)
-    // We need one buffer for Materials (CPU -> GPU every frame or cached)
-    std::optional<mujoco::mjbatch::LocalBuffer> instance_transform_buffer_;
-    std::optional<mujoco::mjbatch::LocalBuffer> instance_material_buffer_;
-    std::optional<mujoco::mjbatch::HostBuffer> instance_transform_staging_;
-    std::optional<mujoco::mjbatch::HostBuffer> instance_material_staging_;
-
-    // We need a way to organize draw calls per frame
-    std::vector<DrawCommand> current_frame_draw_commands_;
-
-    // [MODIFIED] Update Descriptor Set Layout to include SSBOs
-    VkDescriptorSetLayout global_ssbo_layout_ = VK_NULL_HANDLE;
-    VkDescriptorSet global_ssbo_set_ = VK_NULL_HANDLE; // If we only use one set for all batches, or vector if per-batch logic persists.
-    // Suggestion: Make a per-frame SSBO descriptor set.
-    VkDescriptorPool ssbo_descriptor_pool_ = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSet> ssbo_descriptor_sets_;
 
     // Output buffers
     std::vector<unsigned char> rgb_buffer_;

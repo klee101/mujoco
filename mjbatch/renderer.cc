@@ -53,16 +53,6 @@ static size_t CountNonZero(const void* data, size_t n) {
     return c;
 }
 
-static std::string HexPreview(const void* data, size_t n, size_t maxbytes = 16) {
-    const uint8_t* p = (const uint8_t*)data;
-    std::ostringstream oss;
-    size_t m = std::min(n, maxbytes);
-    for (size_t i = 0; i < m; ++i) {
-        oss << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
-            << (int)p[i] << (i + 1 < m ? " " : "");
-    }
-    return oss.str();
-}
 
 std::string glm_vec3_to_string(const glm::vec3& v) {
     std::ostringstream oss;
@@ -105,56 +95,7 @@ BatchRenderer::~BatchRenderer() {
     Cleanup();
 }
 
-BatchRenderer::BatchRenderer(BatchRenderer&& other) noexcept {
-    *this = std::move(other);
-}
 
-BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
-    if (this != &other) {
-        Cleanup();
-        models_ = other.models_;
-        config_ = other.config_;
-        env_resources_ = std::move(other.env_resources_);
-        backend_ = std::move(other.backend_);
-        device_ = std::move(other.device_);
-        render_context_ = std::move(other.render_context_);
-        graphics_pipeline_ = other.graphics_pipeline_;
-        pipeline_layout_ = other.pipeline_layout_;
-        descriptor_set_layout_ = other.descriptor_set_layout_;
-        descriptor_pool_ = other.descriptor_pool_;
-        descriptor_sets_ = std::move(other.descriptor_sets_);
-        vert_shader_module_ = other.vert_shader_module_;
-        frag_shader_module_ = other.frag_shader_module_;
-        framebuffers_ = std::move(other.framebuffers_);
-        color_images_ = std::move(other.color_images_);
-        depth_images_ = std::move(other.depth_images_);
-        color_image_views_ = std::move(other.color_image_views_);
-        depth_image_views_ = std::move(other.depth_image_views_);
-        command_pool_ = other.command_pool_;
-        command_buffers_ = std::move(other.command_buffers_);
-        render_fences_ = std::move(other.render_fences_);
-        staging_buffers_ = std::move(other.staging_buffers_);
-        global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
-        global_index_buffer_ = std::move(other.global_index_buffer_);
-        global_mesh_cache_ = std::move(other.global_mesh_cache_);
-        rgb_buffer_ = std::move(other.rgb_buffer_);
-        depth_buffer_ = std::move(other.depth_buffer_);
-        last_stats_ = other.last_stats_;
-        initialized_ = other.initialized_;
-        frame_counter_ = other.frame_counter_;
-
-        // Invalidate other's handles
-        other.graphics_pipeline_ = VK_NULL_HANDLE;
-        other.pipeline_layout_ = VK_NULL_HANDLE;
-        other.descriptor_set_layout_ = VK_NULL_HANDLE;
-        other.descriptor_pool_ = VK_NULL_HANDLE;
-        other.vert_shader_module_ = VK_NULL_HANDLE;
-        other.frag_shader_module_ = VK_NULL_HANDLE;
-        other.command_pool_ = VK_NULL_HANDLE;
-        other.initialized_ = false;
-    }
-    return *this;
-}
 
 // --------------------------- Shader Loading ---------------------------------
 std::vector<uint32_t> BatchRenderer::readSPIRV(const std::string& filename) {
@@ -237,10 +178,10 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
         }
 
         tmpTextures_.push_back(std::move(tex_info));
-        printf("Extracted texture ID %d: %dx%d, Channels=%d, Type=%d\n",
-               i, tex_info.width, tex_info.height, tex_info.channels, tex_info.type);
+        // printf("Extracted texture ID %d: %dx%d, Channels=%d, Type=%d\n",
+        //        i, tex_info.width, tex_info.height, tex_info.channels, tex_info.type);
     }
-    printf("Extracted %zu textures from model.\n", tmpTextures_.size());
+    // printf("Extracted %zu textures from model.\n", tmpTextures_.size());
     return tmpTextures_;
 }
 // --------------------------- Texture Loading ---------------------------------
@@ -431,11 +372,11 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
             MaterialTexture mat_tex(std::move(texture), view, texture_backing.value());
 
             if (is_cube_type) {
-                TextureMapping mapping = { 1, (int)result.textures_cube.size() };
+                TextureMapping mapping = { 2, (int)result.textures_cube.size() };
                 result.global_texture_lookup.push_back(mapping);
                 result.textures_cube.emplace_back(std::move(mat_tex));
             } else {
-                TextureMapping mapping = { 0, (int)result.textures_2d.size() };
+                TextureMapping mapping = { 1, (int)result.textures_2d.size() };
                 result.global_texture_lookup.push_back(mapping);
                 result.textures_2d.emplace_back(std::move(mat_tex));
             }
@@ -835,60 +776,142 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
         //Update camera uniform buffer
         const CameraUBO& camera_ubo = res.render_scene->GetCameraUBO();
 
-        LOG(config_, "Scene " + std::to_string(i) + 
-            " Camera view_proj=" + HexPreview(&camera_ubo.view_proj, sizeof(camera_ubo.view_proj)) +
-            ", position=" + std::to_string(camera_ubo.position.x) +", "+
-            std::to_string(camera_ubo.position.y) +", "+
-            std::to_string(camera_ubo.position.z) +", "+
-            ", forward=" + HexPreview(&camera_ubo.forward, sizeof(camera_ubo.forward)) +
-            ", up=" + std::to_string(camera_ubo.up.x) +", "+
-            std::to_string(camera_ubo.up.y) +", "+
-            std::to_string(camera_ubo.up.z) +", "+
-            ", near_plane=" + std::to_string(camera_ubo.near_plane) +
-            ", far_plane=" + std::to_string(camera_ubo.far_plane) +
-            ", fov=" + std::to_string(camera_ubo.fov));
+        // LOG(config_, "Scene " + std::to_string(i) + 
+        //     " Camera view_proj=" + HexPreview(&camera_ubo.view_proj, sizeof(camera_ubo.view_proj)) +
+        //     ", position=" + std::to_string(camera_ubo.position.x) +", "+
+        //     std::to_string(camera_ubo.position.y) +", "+
+        //     std::to_string(camera_ubo.position.z) +", "+
+        //     ", forward=" + HexPreview(&camera_ubo.forward, sizeof(camera_ubo.forward)) +
+        //     ", up=" + std::to_string(camera_ubo.up.x) +", "+
+        //     std::to_string(camera_ubo.up.y) +", "+
+        //     std::to_string(camera_ubo.up.z) +", "+
+        //     ", near_plane=" + std::to_string(camera_ubo.near_plane) +
+        //     ", far_plane=" + std::to_string(camera_ubo.far_plane) +
+        //     ", fov=" + std::to_string(camera_ubo.fov));
         
-        std::memcpy(camera_staging_buffers_[i].ptr, &camera_ubo, sizeof(CameraUBO));
-        camera_staging_buffers_[i].flush(dev);
-        copy_ops.push_back({camera_staging_buffers_[i].buffer, 
-                           camera_uniform_buffers_[i].buffer, 
-                           sizeof(CameraUBO)});
+        uint8_t* dst = static_cast<uint8_t*>(global_camera_staging_->ptr) + (i * sizeof(CameraUBO));
+        std::memcpy(dst, &camera_ubo, sizeof(CameraUBO));
 
         // Update light uniform buffer
         const auto& lights = res.render_scene->GetLights();
-        LOG(config_, "Scene " + std::to_string(i) + " has " + std::to_string(lights.size()) + " lights.");
+        // LOG(config_, "Scene " + std::to_string(i) + " has " + std::to_string(lights.size()) + " lights.");
         LightUBO light_ubo{};
         size_t light_count = std::min(lights.size(), size_t(10));
         for (size_t j = 0; j < light_count; ++j) {
             light_ubo.lights[j] = lights[j];
-            std::string type_name;
-            switch (lights[j].type) {
-                case 0: type_name = "Spot"; break;
-                case 1: type_name = "Directional"; break;
-                case 2: type_name = "Point"; break;
-                default: type_name = "Unknown (" + std::to_string(lights[j].type) + ")"; break;
-            }
-            LOG(config_, " Light " + std::to_string(j) + 
-                        ": pos=" + glm_vec3_to_string(lights[j].position) +
-                        ", direction=" + glm_vec3_to_string(lights[j].direction) +
-                        ", type=" + type_name + 
-                        ", ambient=" + glm_vec3_to_string(lights[j].ambient) +
-                        ", diffuse=" + glm_vec3_to_string(lights[j].diffuse) +
-                        ", specular=" + glm_vec3_to_string(lights[j].specular) +
-                        ", attenuation=" + glm_vec3_to_string(lights[j].attenuation));
         }
         light_ubo.lightCount = static_cast<uint32_t>(light_count);
-        std::memcpy(light_staging_buffers_[i].ptr, &light_ubo, sizeof(LightUBO));
-        light_staging_buffers_[i].flush(dev);
-        copy_ops.push_back({light_staging_buffers_[i].buffer, 
-                           light_uniform_buffers_[i].buffer, 
-                           sizeof(LightUBO)});
-
-        printf("size of LightUBO: %zu bytes, non-zero bytes: %zu\n", 
-            sizeof(LightUBO), CountNonZero(&light_ubo, sizeof(LightUBO)));
-
+        uint8_t* light_dst = static_cast<uint8_t*>(global_light_staging_->ptr) + (i * sizeof(LightUBO));
+        std::memcpy(light_dst, &light_ubo, sizeof(LightUBO));
     }
+
+    // [ADDED] Prepare Instancing Data
+    current_frame_draw_commands_.clear();
+
+    // 1. Group Drawables by Mesh Name
+    // Map: MeshName -> List of {Transform, Material, BatchID}
+    struct InstData {
+        InstanceTransform t;
+        InstanceMaterial m;
+    };
+    std::unordered_map<std::string, std::vector<InstData>> mesh_groups;
+
+    for (int i = 0; i < count; ++i) {
+        PerEnvResources &res = env_resources_[i];
+        
+        // Update transforms in Scene (Keep your existing logic)
+        // But we need to extract them now
+        const auto& drawables = res.render_scene->GetDrawables();
+
+        int current_model_tex_offset = (i < texture_offsets_.size()) ? texture_offsets_[i] : 0;
     
+        for (const auto& d : drawables) {
+            if (!d.visible) continue;
+
+        InstData data;
+
+        data.t.model = d.transform;
+
+        data.m.rgba = d.material.rgba;
+        data.m.specular = d.material.specular;
+        data.m.emission = d.material.emission;
+        data.m.shininess = d.material.shininess;
+        data.m.reflectance = d.material.reflectance;
+        data.m.batch_id = i;
+
+        // type: 0 = None, 1 = 2D, 2 = Cube
+        int global_tex_id = current_model_tex_offset + d.material.texture_id;
+            if (d.material.texture_id >= 0 && global_tex_id < material_textures_.global_texture_lookup.size()) {
+                 const auto& mapping = material_textures_.global_texture_lookup[global_tex_id];
+                 data.m.texture_index = mapping.index_in_array;
+                 data.m.texture_type = mapping.type;
+            } else {
+                 data.m.texture_index = 0;
+                 data.m.texture_type = 0;
+            }
+            mesh_groups[d.global_mesh_name].push_back(data);
+        }
+
+        
+    }
+
+    // Camera: Upload the CameraSSBO
+    size_t camera_ubo_size = count * sizeof(CameraUBO);
+    global_camera_staging_->flush(*device_);
+    copy_ops.push_back({
+        global_camera_staging_->buffer, 
+        global_camera_buffer_->buffer, 
+        camera_ubo_size
+    });
+
+    // Light: Upload the LightSSBO
+    size_t light_ubo_size = count * sizeof(LightUBO);
+    global_light_staging_->flush(*device_);
+    copy_ops.push_back({
+        global_light_staging_->buffer, 
+        global_light_buffer_->buffer, 
+        light_ubo_size
+    });
+
+    // Instance: Transform and material buffers
+    std::vector<InstanceTransform> all_transforms;
+    std::vector<InstanceMaterial> all_materials;
+    
+    for (auto& [mesh_name, instances] : mesh_groups) {
+        DrawCommand cmd;
+        cmd.mesh_name = mesh_name;
+        cmd.first_instance_index = (uint32_t)all_transforms.size();
+        cmd.instance_count = (uint32_t)instances.size();
+        
+        for (const auto& inst : instances) {
+            all_transforms.push_back(inst.t);
+            all_materials.push_back(inst.m);
+        }
+        
+        current_frame_draw_commands_.push_back(cmd);
+    }
+
+    size_t t_size = all_transforms.size() * sizeof(InstanceTransform);
+    size_t m_size = all_materials.size() * sizeof(InstanceMaterial);
+    
+    std::memcpy(instance_transform_staging_->ptr, all_transforms.data(), t_size);
+    std::memcpy(instance_material_staging_->ptr, all_materials.data(), m_size);
+    
+    instance_transform_staging_->flush(*device_);
+    instance_material_staging_->flush(*device_);
+
+    copy_ops.push_back({
+        instance_transform_staging_->buffer, 
+        instance_transform_buffer_->buffer, 
+        t_size
+    });
+    
+    copy_ops.push_back({
+        instance_material_staging_->buffer, 
+        instance_material_buffer_->buffer, 
+        m_size
+    }); 
+
     // Batch upload all copy operations
     if (!copy_ops.empty()) {
         VkCommandBuffer cmd = render_context_->load_cmd_;
@@ -922,156 +945,69 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
 bool BatchRenderer::RecordCommandBuffers(int count) {
     Device &dev = *device_;
     
-    for (int i = 0; i < count; ++i) {
-        VkCommandBuffer cmd = command_buffers_[i];
-        PerEnvResources &res = env_resources_[i];
-        
-        // --- 1. Begin Recording & Render Pass ---
-        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-        REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-        
-        VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        renderPassInfo.renderPass = render_context_->renderPass;
-        renderPassInfo.framebuffer = framebuffers_[i];
-        renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
-        
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // Dark gray bg
-        clearValues[1].depthStencil = {1.0f, 0};
-        renderPassInfo.clearValueCount = clearValues.size();
-        renderPassInfo.pClearValues = clearValues.data();
-        
-        dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        
-        // --- 2. Bind Pipeline & Global State ---
-        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-        
-        // Set dynamic state
-        VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+    VkCommandBuffer cmd = command_buffers_[0];
+    
+    // --- 1. Begin Recording & Render Pass ---
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+    
+    VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    renderPassInfo.renderPass = render_context_->renderPass;
+    renderPassInfo.framebuffer = global_framebuffer_;
+    renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
+    
+    std::array<VkClearValue, 2> clearValues{};
+    clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // Dark gray bg
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = clearValues.size();
+    renderPassInfo.pClearValues = clearValues.data();
+    
+    dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // --- 2. Bind Pipeline & Global State ---
+    dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
+    
+    // Set dynamic state
+    VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+    dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+    dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
 
-        // Bind Descriptor Sets (Camera/Light + Textures)
-        std::vector<VkDescriptorSet> sets = { descriptor_sets_[i], global_texture_descriptor_set };
-        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                     0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+    // Bind Global Resources
+    // Set 0: UBOs (might need Dynamic Offset if using one huge UBO, or just bind index 0 if shared)
+    // Set 1: Textures
+    // Set 2: SSBOs (The ones we filled in UpdateScenes)
+    std::vector<VkDescriptorSet> sets = { global_texture_descriptor_set, global_ssbo_set_ };
+    dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                    0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
-        // --- 3. Bind Global Geometry Buffers  ---
-        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE && global_index_buffer_->buffer != VK_NULL_HANDLE) {
-            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+    // --- 3. Bind Global Geometry Buffers  ---
+    if (global_vertex_buffer_->buffer != VK_NULL_HANDLE && global_index_buffer_->buffer != VK_NULL_HANDLE) {
+        VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+        vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+    
+        // Iterate Draw Commands (Unique Meshes)
+        for (const auto& cmd_info : current_frame_draw_commands_) {
+            // Lookup Geometry
+            auto it = global_mesh_cache_.find(cmd_info.mesh_name);
+            if (it == global_mesh_cache_.end()) continue;
+            const MeshEntry& mesh = it->second;
 
-            // --- 4. Draw Loop ---
-            const auto& drawables = res.render_scene->GetDrawables();
-            
-            for (const auto& drawable : drawables) {
-                if (!drawable.visible) continue;
-
-                // [LOOKUP] Find geometry offsets in global cache
-                auto it = global_mesh_cache_.find(drawable.global_mesh_name);
-                if (it == global_mesh_cache_.end()) {
-                    LOG(config_, "Warning: Mesh not found in cache: " + drawable.global_mesh_name);
-                    continue;
-                }
-                const MeshEntry& entry = it->second;
-
-                // Setup Push Constants (Transform + Material + Texture)
-                PushConstants pushConstants{};
-                pushConstants.model = drawable.transform;
-                pushConstants.rgba = drawable.material.rgba;
-                pushConstants.specular = drawable.material.specular;
-                pushConstants.emission = drawable.material.emission;
-                pushConstants.shininess = drawable.material.shininess;
-                pushConstants.reflectance = drawable.material.reflectance;
-
-
-                // Texture Lookup Logic (Flat index + Cache lookup)
-                bool has_texture = (drawable.material.texture_id >= 0);
-
-                int current_model_tex_offset = 0;
-                // 安全检查，防止 models 数量和 batch_size 不一致
-                if (i < texture_offsets_.size()) {
-                    current_model_tex_offset = texture_offsets_[i];
-                }
-                int global_tex_id = current_model_tex_offset + drawable.material.texture_id;
-
-                if (has_texture && global_tex_id < material_textures_.global_texture_lookup.size()) {
-                    // 注意：这里的 texture_id 是全局扁平索引，还是模型局部索引？
-                    // 如果是多模型环境，Scene::ExtractMaterials 需要加上模型偏移量。
-                    // 假设 texture_id 已经是 Global Lookup Index
-                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                    pushConstants.texture_type = tex_map.type;
-                    pushConstants.texture_index = tex_map.index_in_array;
-                } else {
-                    pushConstants.texture_type = -1;
-                    pushConstants.texture_index = -1;
-                }
-
-                // ===========================================================
-                // [DEBUG LOG] 纹理索引映射检查
-                // ===========================================================
-                // 限制日志输出频率：仅打印前 100 次 draw call 的信息
-                // 如果需要持续调试，可以移除 static counter 限制，但会导致 Log 刷屏
-                static int s_tex_debug_count = 0;
-                if (s_tex_debug_count < 100 && pushConstants.texture_type != -1) {
-                    s_tex_debug_count++;
-
-                    std::string status_msg;
-                    bool is_out_of_bounds = has_texture && (global_tex_id >= material_textures_.global_texture_lookup.size());
-
-                    if (!has_texture) {
-                        status_msg = "SKIP (Raw ID < 0)";
-                    } else if (is_out_of_bounds) {
-                        status_msg = "ERROR (Out of Bounds)";
-                    } else {
-                        status_msg = "OK";
-                    }
-
-                    // 格式化输出字符串
-                    char buf[512];
-                    snprintf(buf, sizeof(buf), 
-                        "[TexMapping] Batch=%d | MeshName=%s | RawID=%d | LookupSize=%zu | %s -> {Type=%d, Index=%d}", 
-                        i,                                              // 当前 Batch 索引
-                        drawable.global_mesh_name.c_str(),              // Mesh 名字 (用于确认是哪个物体)
-                        drawable.material.texture_id,                   // 原始材质中的 ID
-                        material_textures_.global_texture_lookup.size(),// 全局查找表大小
-                        status_msg.c_str(),                             // 状态
-                        pushConstants.texture_type,                     // 最终传给 Shader 的类型
-                        pushConstants.texture_index                     // 最终传给 Shader 的数组下标
-                    );
-                    
-                    LOG(config_, std::string(buf));
-
-                    // 如果发现越界，额外打印一条显眼的警告
-                    if (is_out_of_bounds) {
-                        LOG(config_, "  !!! CRITICAL WARNING: Texture ID " + 
-                            std::to_string(drawable.material.texture_id) + 
-                            " exceeds global lookup size!");
-                    }
-                }
-
-                dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                      0, sizeof(PushConstants), &pushConstants);
-
-                // [DRAW] 使用 Global Buffer 的偏移量
-                // indexCount: entry.index_count
-                // instanceCount: 1
-                // firstIndex: entry.index_offset (全局索引缓冲中的起始位置)
-                // vertexOffset: entry.vertex_offset (全局顶点缓冲中的起始位置，会被加到索引值上)
-                // firstInstance: 0
-                vkCmdDrawIndexed(cmd, 
-                               entry.index_count, 
-                               1, 
-                               entry.index_offset, 
-                               entry.vertex_offset, 
-                               0);
-            }
+            // Draw Instanced
+            // vertexOffset = mesh.vertex_offset
+            // firstInstance = cmd_info.first_instance_index (This offsets into the SSBO)
+            vkCmdDrawIndexed(cmd, 
+                            mesh.index_count, 
+                            cmd_info.instance_count, 
+                            mesh.index_offset, 
+                            mesh.vertex_offset, 
+                            cmd_info.first_instance_index);
         }
+        
+        
 
         dev.dt.cmdEndRenderPass(cmd);
         REQ_VK(dev.dt.endCommandBuffer(cmd));
@@ -1090,8 +1026,8 @@ bool BatchRenderer::SubmitAndWait() {
     char log_buf[256];
     
     for (size_t i = 0; i < command_buffers_.size(); ++i) {
-        snprintf(log_buf, sizeof(log_buf), "Processing fence %zu...", i);
-        LOG(config_, log_buf);
+        // snprintf(log_buf, sizeof(log_buf), "Processing fence %zu...", i);
+        // LOG(config_, log_buf);
         
         // 使用0超时快速检查fence是否已signaled
         VkResult quickCheck = dev.dt.waitForFences(
@@ -1104,13 +1040,13 @@ bool BatchRenderer::SubmitAndWait() {
         
         if (quickCheck == VK_SUCCESS) {
             // Fence已signaled，正常重置
-            snprintf(log_buf, sizeof(log_buf), "  Fence %zu already signaled, resetting", i);
-            LOG(config_, log_buf);
+            // snprintf(log_buf, sizeof(log_buf), "  Fence %zu already signaled, resetting", i);
+            // LOG(config_, log_buf);
             resetFence(dev, render_fences_[i]);
         } else if (quickCheck == VK_TIMEOUT) {
             // Fence未signaled（首次使用或有问题）
-            snprintf(log_buf, sizeof(log_buf), "  Fence %zu not signaled (first use), resetting", i);
-            LOG(config_, log_buf);
+            // snprintf(log_buf, sizeof(log_buf), "  Fence %zu not signaled (first use), resetting", i);
+            // LOG(config_, log_buf);
             resetFence(dev, render_fences_[i]);
         } else {
             // 错误
@@ -1132,11 +1068,11 @@ bool BatchRenderer::SubmitAndWait() {
             return false;
         }
         
-        snprintf(log_buf, sizeof(log_buf), "  Fence %zu submitted", i);
-        LOG(config_, log_buf);
+        // snprintf(log_buf, sizeof(log_buf), "  Fence %zu submitted", i);
+        // LOG(config_, log_buf);
     }
     
-    LOG(config_, "All submissions complete, waiting for completion...");
+    // LOG(config_, "All submissions complete, waiting for completion...");
     
     // 等待所有fence完成
     for (size_t i = 0; i < render_fences_.size(); ++i) {
@@ -1159,7 +1095,7 @@ bool BatchRenderer::SubmitAndWait() {
         }
     }
     
-    LOG(config_, "All fences completed successfully");
+    // LOG(config_, "All fences completed successfully");
     return true;
 }
 
@@ -1514,25 +1450,44 @@ bool BatchRenderer::CreatePipeline() {
 
     REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &layout_info, nullptr, &global_texture_set_layout));
     
+    // [ADDED] 3. SSBO Descriptor Layout (Set 2)
+    // Binding 0: Transforms
+    // Binding 1: Materials
+    VkDescriptorSetLayoutBinding ssboBindings[2] = {};
+    ssboBindings[0].binding = 0;
+    ssboBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ssboBindings[0].descriptorCount = 1;
+    ssboBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    ssboBindings[1].binding = 1;
+    ssboBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ssboBindings[1].descriptorCount = 1;
+    ssboBindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo ssboLayoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ssboLayoutInfo.bindingCount = 2;
+    ssboLayoutInfo.pBindings = ssboBindings;
+    REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &ssboLayoutInfo, nullptr, &global_ssbo_layout_));
     //-------------------------------------------------------------------------//
     
-    // Pipeline layout with push constants for per-drawable transform
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float) * 16; // view-projection matrix (mat4)
+    // [DISABLED] Using SSBOs for transforms instead of push constants
+    // VkPushConstantRange pushConstantRange{};
+    // pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // pushConstantRange.offset = 0;
+    // pushConstantRange.size = sizeof(float) * 16; // view-projection matrix (mat4)
     
     std::vector<VkDescriptorSetLayout> setLayouts = {
-        descriptor_set_layout_,      // index 0 -> Set 0 (Camera/Light UBOs)
-        global_texture_set_layout    // index 1 -> Set 1 (Bindless Textures)
+        descriptor_set_layout_,       // Set 0 (Camera/Light UBOs)
+        global_texture_set_layout,    // Set 1 (Textures)
+        global_ssbo_layout_           // Set 2 (SSBOs)
     };
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.setLayoutCount = (uint32_t)setLayouts.size();
     pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    // pipelineLayoutInfo.pushConstantRangeCount = 1;
+    // pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
     REQ_VK(dev.dt.createPipelineLayout(dev.hdl, &pipelineLayoutInfo, nullptr, &pipeline_layout_));
     
@@ -1564,68 +1519,51 @@ bool BatchRenderer::CreateFramebuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
     
-    framebuffers_.reserve(config_.batch_size);
-    color_images_.reserve(config_.batch_size);
-    depth_images_.reserve(config_.batch_size);
-    color_image_views_.reserve(config_.batch_size);
-    depth_image_views_.reserve(config_.batch_size);
-    
-    for (int i = 0; i < config_.batch_size; ++i) {
-        // Create color image
-        auto color_img = allocator.makeColorAttachment(
-            config_.frame_width, config_.frame_height, 1, VK_FORMAT_R8G8B8A8_UNORM);
-        color_images_.push_back(std::move(color_img));
-        
-        // Create depth image
-        if (config_.enable_depth) {
-            auto depth_img = allocator.makeDepthAttachment(
-                config_.frame_width, config_.frame_height, 1, VK_FORMAT_D32_SFLOAT);
-            depth_images_.push_back(std::move(depth_img));
-        }
-        
-        // Create image views
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = color_images_[i].image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        VkImageView colorView;
-        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &colorView));
-        color_image_views_.push_back(colorView);
-        
-        VkImageView depthView = VK_NULL_HANDLE;
-        if (config_.enable_depth) {
-            viewInfo.image = depth_images_[i].image;
-            viewInfo.format = VK_FORMAT_D32_SFLOAT;
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depthView));
-        }
-        depth_image_views_.push_back(depthView);
-        
-        // Create framebuffer
-        std::vector<VkImageView> attachments = {color_image_views_[i]};
-        if (config_.enable_depth && depth_image_views_[i] != VK_NULL_HANDLE) {
-            attachments.push_back(depth_image_views_[i]);
-        }
-        
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = render_context_->renderPass;
-        framebufferInfo.attachmentCount = attachments.size();
-        framebufferInfo.pAttachments = attachments.data();
-        framebufferInfo.width = config_.frame_width;
-        framebufferInfo.height = config_.frame_height;
-        framebufferInfo.layers = 1;
-        
-        REQ_VK(dev.dt.createFramebuffer(dev.hdl, &framebufferInfo, nullptr, &framebuffers_[i]));
+    // Create layer = batch_size attachments
+    global_color_image_ = allocator.makeColorAttachment(
+            config_.frame_width, config_.frame_height, config_.batch_size, VK_FORMAT_R8G8B8A8_UNORM
+        );
+    if (config_.enable_depth) {
+        global_depth_image_ = allocator.makeDepthAttachment(
+            config_.frame_width, config_.frame_height, config_.batch_size, VK_FORMAT_D32_SFLOAT
+        );
+    }
+
+    // 3. 创建 Array Image Views (关键: ViewType = 2D_ARRAY)
+    VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; // <--- 关键
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = config_.batch_size; // <--- 覆盖所有层
+    viewInfo.image = global_color_image_.image;
+
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &global_color_view_));
+
+    if (config_.enable_depth) {
+        viewInfo.image = global_depth_image_.image;
+        viewInfo.format = VK_FORMAT_D32_SFLOAT;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &global_depth_view_));
     }
     
-    LOG(config_, "CreateFramebuffers(): framebuffers created");
+    // 4. 创建 Global Framebuffer
+    std::vector<VkImageView> attachments = {global_color_view_};
+    if (config_.enable_depth) attachments.push_back(global_depth_view_);
+
+    VkFramebufferCreateInfo fbInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbInfo.renderPass = render_context_->renderPass;
+    fbInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    fbInfo.pAttachments = attachments.data();
+    fbInfo.width = config_.frame_width;
+    fbInfo.height = config_.frame_height;
+    fbInfo.layers = config_.batch_size; // <--- 指定层数
+
+    REQ_VK(dev.dt.createFramebuffer(dev.hdl, &fbInfo, nullptr, &global_framebuffer_));
+
+    LOG(config_, "CreateFramebuffers(): Created Global Array Framebuffer.");
     return true;
 }
 
@@ -1682,8 +1620,8 @@ bool BatchRenderer::CreateBuffers() {
         // 1. Define the pool size (count needs to cover all descriptors)
         std::array<VkDescriptorPoolSize, 2> pool_sizes{};
         // Binding 0: 图片数组
-        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; // 注意：不再是 COMBINED_IMAGE_SAMPLER
-        pool_sizes[0].descriptorCount = kMaxBindlessTextures;  // 必须足够大！
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        pool_sizes[0].descriptorCount = kMaxBindlessTextures;  
 
         // Binding 1: 采样器
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
@@ -1706,64 +1644,72 @@ bool BatchRenderer::CreateBuffers() {
         REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &alloc_info, &global_texture_descriptor_set));   
     }
 
-    // Create uniform buffers
-    camera_uniform_buffers_.clear();
-    camera_staging_buffers_.clear();
+    // Create Camera and Light SSBOs
+    {
+        size_t count = config_.batch_size;
 
-    light_uniform_buffers_.clear();
-    light_staging_buffers_.clear();
-    for (int i = 0; i < config_.batch_size; ++i) {
-        // Camera UBO
-        auto camera_ubo = allocator.makeLocalBuffer(
-            sizeof(CameraUBO), 
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        camera_uniform_buffers_.emplace_back(std::move(*camera_ubo));
-        
-        // Camera staging buffer for updates
-        camera_staging_buffers_.emplace_back(
-            allocator.makeStagingBuffer(sizeof(CameraUBO)));
-        
-        // light UBO
-        auto light_ubo = allocator.makeLocalBuffer(
-            sizeof(LightUBO), 
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        light_uniform_buffers_.emplace_back(std::move(*light_ubo));
+        global_camera_staging_= allocator.makeStagingBuffer(
+            count * sizeof(CameraUBO));
+        global_light_staging_ = allocator.makeStagingBuffer(
+            count * sizeof(LightUBO));
+        global_camera_buffer_ = allocator.makeLocalBuffer(
+            count * sizeof(CameraUBO),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        global_light_buffer_ = allocator.makeLocalBuffer(
+            count * sizeof(LightUBO),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        // [ADDED] Allocate SSBO Descriptor Sets
+        {
+            std::array<VkDescriptorPoolSize, 1> pool_sizes{};
+            pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            pool_sizes[0].descriptorCount = 2; // 2 bindings per set * 1 set
 
-        light_staging_buffers_.emplace_back(
-            allocator.makeStagingBuffer(sizeof(LightUBO)));
+            VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+            pool_info.poolSizeCount = 1;
+            pool_info.pPoolSizes = pool_sizes.data();
+            pool_info.maxSets = 1; 
+
+            REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &pool_info, nullptr, &ssbo_descriptor_pool_)); // Add member ssbo_descriptor_pool_ to class
+
+            VkDescriptorSetAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            alloc_info.descriptorPool = ssbo_descriptor_pool_;
+            alloc_info.descriptorSetCount = 1;
+            alloc_info.pSetLayouts = &global_ssbo_layout_; // Created in CreatePipeline
+
+            REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &alloc_info, &global_ssbo_set_)); // Add member global_ssbo_set_ to class
+        }
+
+        // Update Descriptor Set with buffer info
+        {
+            VkDescriptorBufferInfo t_info = {};
+            t_info.buffer = instance_transform_buffer_->buffer;
+            t_info.offset = 0;
+            t_info.range = VK_WHOLE_SIZE;
+
+            VkDescriptorBufferInfo m_info = {};
+            m_info.buffer = instance_material_buffer_->buffer;
+            m_info.offset = 0;
+            m_info.range = VK_WHOLE_SIZE;
+
+            VkWriteDescriptorSet writes[2] = {};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = global_ssbo_set_;
+            writes[0].dstBinding = 0; // Binding 0: Transforms
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].pBufferInfo = &t_info;
+
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = global_ssbo_set_;
+            writes[1].dstBinding = 1; // Binding 1: Materials
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[1].pBufferInfo = &m_info;
+
+            dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
+        }
         
-        // Update descriptor sets
-        VkDescriptorBufferInfo cameraBufferInfo{};
-        cameraBufferInfo.buffer = camera_uniform_buffers_[i].buffer;
-        cameraBufferInfo.offset = 0;
-        cameraBufferInfo.range = sizeof(CameraUBO);
-        
-        VkDescriptorBufferInfo lightBufferInfo{};
-        lightBufferInfo.buffer = light_uniform_buffers_[i].buffer;
-        lightBufferInfo.offset = 0;
-        lightBufferInfo.range = sizeof(LightUBO);
-        
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = descriptor_sets_[i];
-        writes[0].dstBinding = 0;
-        writes[0].dstArrayElement = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &cameraBufferInfo;
-        
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = descriptor_sets_[i];
-        writes[1].dstBinding = 1;
-        writes[1].dstArrayElement = 0;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &lightBufferInfo;
-        
-        // TODO: Add the texture sampler descriptor
-        dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
     }
-
     // update global texture descriptor set for bindless textures
     const auto& loaded_resources = LoadMaterialTextures();
     const auto& textures_2d = loaded_resources.textures_2d;
@@ -1828,28 +1774,72 @@ bool BatchRenderer::CreateBuffers() {
         dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
-    // Initialize vertex/index buffer vectors - pre-allocate with dummy buffers
-    // vertex_buffers_.clear();
-    // index_buffers_.clear();
-    // for (int i = 0; i < config_.batch_size; ++i) {
-    //     // Create minimal dummy buffers that will be replaced in UpdateScenes
-    //     auto vertex_buffer = allocator.makeLocalBuffer(1, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    //     if (!vertex_buffer) {
-    //         FATAL("Failed to allocate dummy vertex buffer");
-    //     }
-    //     vertex_buffers_.emplace_back(std::move(*vertex_buffer));
-        
-    //     // index buffer
-    //     auto index_buffer = allocator.makeLocalBuffer(1, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-    //     if (!index_buffer) {
-    //         FATAL("Failed to allocate dummy index buffer");
-    //     }
-    //     index_buffers_.emplace_back(std::move(*index_buffer));
-    // }
-    // vertex_counts_.resize(config_.batch_size, 0);
-    // index_counts_.resize(config_.batch_size, 0);
-    // vertex_buffer_sizes_.resize(config_.batch_size, 0);
-    // index_buffer_sizes_.resize(config_.batch_size, 0);
+     // [ADDED] Create SSBO Buffers (Host Visible for frequent updates)
+    // Size estimation: Max objects per batch * batch size. 
+    // Let's assume a conservative max of 1000 objects total for now.
+    size_t max_instances = 1000 * config_.batch_size;
+
+    instance_transform_staging_ =  allocator.makeStagingBuffer(max_instances * sizeof(InstanceTransform)); 
+    instance_material_staging_ =  allocator.makeStagingBuffer(max_instances * sizeof(InstanceMaterial));
+
+    instance_transform_buffer_ = allocator.makeLocalBuffer(
+        max_instances * sizeof(InstanceTransform),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    instance_material_buffer_ = allocator.makeLocalBuffer(
+        max_instances * sizeof(InstanceMaterial),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    // [ADDED] Allocate SSBO Descriptor Sets
+    {
+        std::array<VkDescriptorPoolSize, 1> pool_sizes{};
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        pool_sizes[0].descriptorCount = 2; // 2 bindings per set * 1 set
+
+        VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = pool_sizes.data();
+        pool_info.maxSets = 1; 
+
+        REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &pool_info, nullptr, &ssbo_descriptor_pool_)); // Add member ssbo_descriptor_pool_ to class
+
+        VkDescriptorSetAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        alloc_info.descriptorPool = ssbo_descriptor_pool_;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &global_ssbo_layout_; // Created in CreatePipeline
+
+        REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &alloc_info, &global_ssbo_set_)); // Add member global_ssbo_set_ to class
+    }
+
+    // Update Descriptor Set with buffer info
+    {
+        VkDescriptorBufferInfo t_info = {};
+        t_info.buffer = instance_transform_buffer_->buffer;
+        t_info.offset = 0;
+        t_info.range = VK_WHOLE_SIZE;
+
+        VkDescriptorBufferInfo m_info = {};
+        m_info.buffer = instance_material_buffer_->buffer;
+        m_info.offset = 0;
+        m_info.range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet writes[2] = {};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = global_ssbo_set_;
+        writes[0].dstBinding = 0; // Binding 0: Transforms
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo = &t_info;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = global_ssbo_set_;
+        writes[1].dstBinding = 1; // Binding 1: Materials
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &m_info;
+
+        dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
+    }
     
     // Create staging buffers for readback
     staging_buffers_.clear();

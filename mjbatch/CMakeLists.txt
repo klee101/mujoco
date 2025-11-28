@@ -182,3 +182,10 @@ target_link_libraries(
     renderer
 )
 
+add_executable(benchmark_test tests/benchmark_test.cc)
+target_compile_options(benchmark_test PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
+target_link_libraries(
+    benchmark_test
+    renderer
+)
+

@@ -11,169 +11,179 @@
 #include <cmath>
 #include <numeric>
 #include <algorithm>
+#include <vector> 
 
 // ---- Benchmark 配置 ----
-const int BATCH_SIZE = 8;        // ⚠️ 在这里修改测试规模 (例如 64, 128, 512)
-const int FRAME_WIDTH = 640;       // VLA 常用分辨率
+const int BATCH_SIZE = 32;      
+const int FRAME_WIDTH = 640;
 const int FRAME_HEIGHT = 480;
-const int BENCHMARK_STEPS = 10;  // 测试总帧数
-const int WARMUP_STEPS = 5;       // 热身帧数 (不计入统计)
-const std::string MODEL_XML = "./model/lift.xml"; // 测试用的模型
+const int BENCHMARK_STEPS = 100; 
+const int WARMUP_STEPS = 10;
+const std::string MODEL_XML = "/home/hpf/project/vulkan/mujoco/mujoco/build/model/lift.xml";
 
-// PPM 写入函数 (用于验证渲染结果是否正确)
-static bool write_ppm(const std::string& path, const unsigned char* data, int w, int h) {
+
+
+// 输入: rgba_data (指向 RGBA 数据，每像素4字节)
+// 输出: 标准 PPM 文件 (每像素3字节，丢弃 Alpha)
+static bool write_ppm(const std::string& path, const unsigned char* rgba_data, int w, int h) {
     std::ofstream ofs(path, std::ios::binary);
     if (!ofs) return false;
+
+    // 1. 写入 P6 头 (P6 代表二进制 RGB)
     ofs << "P6\n" << w << " " << h << "\n255\n";
-    ofs.write(reinterpret_cast<const char*>(data), std::streamsize(w*h*3));
+
+    // 2. 创建一行 RGB 数据的缓存 (减少磁盘 I/O 次数)
+    std::vector<unsigned char> row_buffer(w * 3);
+
+    // 3. 逐行转换并写入
+    for (int y = 0; y < h; ++y) {
+        const unsigned char* src_row = rgba_data + (size_t)y * w * 4; // 源指针 (RGBA)
+        unsigned char* dst_row = row_buffer.data();                   // 目标指针 (RGB)
+
+        for (int x = 0; x < w; ++x) {
+            dst_row[x * 3 + 0] = src_row[x * 4 + 0]; // R
+            dst_row[x * 3 + 1] = src_row[x * 4 + 1]; // G
+            dst_row[x * 3 + 2] = src_row[x * 4 + 2]; // B
+            // src_row[x * 4 + 3] (Alpha) 被忽略
+        }
+
+        // 将这一行 RGB 数据写入文件
+        ofs.write(reinterpret_cast<const char*>(row_buffer.data()), w * 3);
+    }
+
     return ofs.good();
 }
 
 int main() {
+    // [NVTX] 给主线程命名
+    nvtxNameOsThreadA(pthread_self(), "Main-Thread");
+
+    int hw_threads = std::thread::hardware_concurrency();
+    int pool_size = (hw_threads > 1) ? hw_threads : 1;
+
     printf("======================================\n");
-    printf("⚡ Vulkan Renderer Benchmark (Current)\n");
-    printf("   Batch Size: %d\n", BATCH_SIZE);
-    printf("   Resolution: %dx%d\n", FRAME_WIDTH, FRAME_HEIGHT);
+    printf("⚡ Vulkan Renderer Benchmark (NVTX Instrumented)\n");
+    printf("   Batch Size:  %d\n", BATCH_SIZE);
+    printf("   Pool Size:   %d Threads\n", pool_size);
     printf("======================================\n");
 
-    // ---- 1) 准备模型 (模拟 N 个环境) ----
+    ThreadPool pool(pool_size);
+
     char error[1024] = {0};
     mjModel* base_model = mj_loadXML(MODEL_XML.c_str(), nullptr, error, sizeof(error));
-    if (!base_model) {
-        std::fprintf(stderr, "[Fatal] mj_loadXML failed: %s\n", error);
-        return 1;
-    }
+    printf("Loaded model from '%s'\n", MODEL_XML.c_str());
+    if (!base_model) return 1;
 
     std::vector<mjModel*> models;
     models.reserve(BATCH_SIZE);
-    
-    // 我们复制 base_model N 次，模拟 N 个独立的环境
-    // 注意：在实际内存中，这会占用 N 份模型内存。
     models.push_back(base_model);
     for (int i = 1; i < BATCH_SIZE; ++i) {
         models.push_back(mj_copyModel(nullptr, base_model));
     }
-    printf("[Init] Loaded %d models.\n", BATCH_SIZE);
 
-    // ---- 2) 初始化渲染器 ----
     BatchRendererConfig cfg;
     cfg.batch_size = BATCH_SIZE;
     cfg.frame_width = FRAME_WIDTH;
     cfg.frame_height = FRAME_HEIGHT;
     cfg.enable_depth = true;
-    cfg.enable_validation = false; // Benchmark 时关闭验证层以获得最大性能
+    cfg.enable_validation = false; 
 
-    auto start_init = std::chrono::high_resolution_clock::now();
     auto renderer = BatchRenderer::Create(models, cfg);
-    auto end_init = std::chrono::high_resolution_clock::now();
-    double init_ms = std::chrono::duration<double, std::milli>(end_init - start_init).count();
+    if (!renderer || !renderer->IsValid()) return 2;
 
-    if (!renderer || !renderer->IsValid()) {
-        std::fprintf(stderr, "[Fatal] BatchRenderer::Create failed\n");
-        return 2;
-    }
-    printf("[Init] Renderer initialized in %.2f ms\n", init_ms);
-
-    // ---- 3) 准备数据 (mjData) ----
     std::vector<mjData*> datas(BATCH_SIZE, nullptr);
     for (int i = 0; i < BATCH_SIZE; ++i) {
         datas[i] = mj_makeData(models[i]);
         mj_forward(models[i], datas[i]);
     }
 
-    // ---- 4) 热身 (Warmup) ----
-    // 让 GPU 流水线填满，让驱动编译完 Shader
-    printf("[Run] Warming up (%d frames)...\n", WARMUP_STEPS);
+    // Warmup
     for (int i = 0; i < WARMUP_STEPS; ++i) {
-        // 稍微动一下物体
-        datas[0]->qpos[0] = 0.1f * i; 
-        mj_forward(models[0], datas[0]);
+        pool.ParallelFor(BATCH_SIZE, [&](int start, int end) {
+            for (int j = start; j < end; ++j) {
+                datas[j]->qpos[0] = 0.1f * i;
+                mj_forward(models[j], datas[j]);
+            }
+        });
         renderer->Render(datas.data(), nullptr);
     }
 
-    // ---- 5) 正式测试循环 ----
     printf("[Run] Running Benchmark (%d frames)...\n", BENCHMARK_STEPS);
     
-    std::vector<double> frame_times;
-    frame_times.reserve(BENCHMARK_STEPS);
+    std::vector<double> render_times;     
+    std::vector<double> total_loop_times; 
+    render_times.reserve(BENCHMARK_STEPS);
+    total_loop_times.reserve(BENCHMARK_STEPS);
 
     for (int step = 0; step < BENCHMARK_STEPS; ++step) {
-        // A. 更新物理状态 (模拟真实训练中的 step)
-        // 我们让所有机器人的关节都在动，确保 Render 需要上传新的 Transform 数据
+        // [NVTX] 3. 标记每一帧的总时间 (青色)
+        ScopedNvtxRange frameRange("Frame_Loop", COLOR_LOOP);
+
+        auto t_loop_start = std::chrono::high_resolution_clock::now();
+
         double time_val = step * 0.05;
-        for (int i = 0; i < BATCH_SIZE; ++i) {
-            if (models[i]->nq > 0) {
-                // 简单的正弦运动
-                datas[i]->qpos[0] = std::sin(time_val + i * 0.01);
-            }
-            mj_forward(models[i], datas[i]);
+        
+        {
+            // [NVTX] 4. 标记物理计算总耗时 (主线程视角, 绿色)
+            // 这段时间主线程大部分在 Wait，但可以看到它对应的是 Workers 在忙碌
+            ScopedNvtxRange physRange("Physics_Step_Total", COLOR_PHYSICS);
+
+            pool.ParallelFor(BATCH_SIZE, [&](int start, int end) {
+                // 注意：这里已经在 Worker 线程内部了，但 ScopedNvtxRange 已经在 ParallelFor 内部定义了
+                // 如果需要更细粒度（例如每次 mj_forward），可以在这里加，但会产生太多数据
+                for (int i = start; i < end; ++i) {
+                    if (models[i]->nq > 0) {
+                        datas[i]->qpos[0] = std::sin(time_val + i * 0.01);
+                    }
+                    mj_forward(models[i], datas[i]);
+                }
+            });
         }
 
-        // B. 渲染并计时
         auto t1 = std::chrono::high_resolution_clock::now();
-        
-        auto result = renderer->Render(datas.data(), nullptr);
-        
-        auto t2 = std::chrono::high_resolution_clock::now();
-        double dt_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        frame_times.push_back(dt_ms);
-
-        if (!result) {
-            std::fprintf(stderr, "[Error] Render failed at step %d\n", step);
-            break;
+        RenderResult result;
+        {
+            // [NVTX] 5. 标记渲染提交耗时 (红色)
+            ScopedNvtxRange renderRange("Render_Submit", COLOR_RENDER);
+            result = renderer->Render(datas.data(), nullptr);
         }
 
-        // 简单的进度条
-        if (step % 100 == 0) {
-            printf("\r   Step %d/%d | Last Frame: %.2f ms", step, BENCHMARK_STEPS, dt_ms);
+        auto t2 = std::chrono::high_resolution_clock::now();
+        
+        double render_dt = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        double loop_dt = std::chrono::duration<double, std::milli>(t2 - t_loop_start).count();
+        
+        render_times.push_back(render_dt);
+        total_loop_times.push_back(loop_dt);
+
+        if (!result) break;
+
+        if (step % 20 == 0) {
+            printf("\r   Step %d/%d | Render: %.2f ms | Loop: %.2f ms", step, BENCHMARK_STEPS, render_dt, loop_dt);
             fflush(stdout);
         }
     }
     printf("\n");
 
-    // ---- 6) 统计分析 ----
-    if (!frame_times.empty()) {
-        double total_time = std::accumulate(frame_times.begin(), frame_times.end(), 0.0);
-        double avg_time = total_time / frame_times.size();
-        double min_time = *std::min_element(frame_times.begin(), frame_times.end());
-        double max_time = *std::max_element(frame_times.begin(), frame_times.end());
-        
-        // P99 计算
-        std::vector<double> sorted_times = frame_times;
-        std::sort(sorted_times.begin(), sorted_times.end());
-        double p99_time = sorted_times[static_cast<size_t>(sorted_times.size() * 0.99)];
-        
-        double fps = 1000.0 / avg_time;
-
+    // ... (统计和清理代码保持不变) ...
+    if (!render_times.empty()) {
+        auto calc_stats = [](const std::vector<double>& times, const char* label) {
+            double total = std::accumulate(times.begin(), times.end(), 0.0);
+            double avg = total / times.size();
+            printf("--- %s ---\n  Avg: %.3f ms\n", label, avg);
+        };
         printf("\n============ RESULTS ============\n");
-        printf("Backend:      Current System\n");
-        printf("Frames:       %d\n", (int)frame_times.size());
-        printf("Throughput:   \033[1;32m%.2f FPS\033[0m\n", fps);
-        printf("Latency (Avg): %.3f ms\n", avg_time);
-        printf("Latency (Min): %.3f ms\n", min_time);
-        printf("Latency (Max): %.3f ms\n", max_time);
-        printf("Latency (P99): %.3f ms\n", p99_time);
-        printf("=================================\n");
+        calc_stats(render_times, "Render Only");
+        calc_stats(total_loop_times, "Total Step");
     }
 
-    // ---- 7) 验证输出 (只保存第 0 个环境的图) ----
     const unsigned char* img = renderer->GetRGBFrame(0);
-    if (img) {
-        std::string filename = "benchmark_sample_0.ppm";
-        if (write_ppm(filename, img, FRAME_WIDTH, FRAME_HEIGHT)) {
-            printf("[Info] Saved sample image to %s\n", filename.c_str());
-        }
-    }
+    if (img) write_ppm("benchmark_sample_0.ppm", img, FRAME_WIDTH, FRAME_HEIGHT);
 
-    // ---- 8) 清理资源 ----
-    // 释放 datas
     for (auto* d : datas) mj_deleteData(d);
-    
-    // 释放 renderer (这里 reset 会触发 renderer 析构，释放 vulkan 资源)
-    renderer.reset();
-
-    // 释放 models (必须在 renderer 释放后释放，如果 renderer 不持有 model 所有权)
+    renderer.reset(); 
     for (auto* m : models) mj_deleteModel(m);
 
     return 0;
 }
+

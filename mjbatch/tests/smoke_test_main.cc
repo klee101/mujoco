@@ -9,13 +9,37 @@
 #include <string>
 #include <cstring> // 必须包含，用于 memcpy
 
-// PPM 写入函数保持不变
-static bool write_ppm(const std::string& path, const unsigned char* data, int w, int h) {
-  std::ofstream ofs(path, std::ios::binary);
-  if (!ofs) return false;
-  ofs << "P6\n" << w << " " << h << "\n255\n";
-  ofs.write(reinterpret_cast<const char*>(data), std::streamsize(w*h*3));
-  return ofs.good();
+#include <vector> // 确保包含 vector
+
+// 输入: rgba_data (指向 RGBA 数据，每像素4字节)
+// 输出: 标准 PPM 文件 (每像素3字节，丢弃 Alpha)
+static bool write_ppm(const std::string& path, const unsigned char* rgba_data, int w, int h) {
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs) return false;
+
+    // 1. 写入 P6 头 (P6 代表二进制 RGB)
+    ofs << "P6\n" << w << " " << h << "\n255\n";
+
+    // 2. 创建一行 RGB 数据的缓存 (减少磁盘 I/O 次数)
+    std::vector<unsigned char> row_buffer(w * 3);
+
+    // 3. 逐行转换并写入
+    for (int y = 0; y < h; ++y) {
+        const unsigned char* src_row = rgba_data + (size_t)y * w * 4; // 源指针 (RGBA)
+        unsigned char* dst_row = row_buffer.data();                   // 目标指针 (RGB)
+
+        for (int x = 0; x < w; ++x) {
+            dst_row[x * 3 + 0] = src_row[x * 4 + 0]; // R
+            dst_row[x * 3 + 1] = src_row[x * 4 + 1]; // G
+            dst_row[x * 3 + 2] = src_row[x * 4 + 2]; // B
+            // src_row[x * 4 + 3] (Alpha) 被忽略
+        }
+
+        // 将这一行 RGB 数据写入文件
+        ofs.write(reinterpret_cast<const char*>(row_buffer.data()), w * 3);
+    }
+
+    return ofs.good();
 }
 
 int main() {
@@ -92,24 +116,24 @@ int main() {
       int h = cfg.frame_height;
       int combined_w = w * 2; // 宽度翻倍
       
-      // 分配大缓冲区 (RGB 3通道)
-      std::vector<unsigned char> combined_buffer(combined_w * h * 3);
+      // 分配大缓冲区 (RGBA 4通道)
+      std::vector<unsigned char> combined_buffer(combined_w * h * 4);
 
       // 按行拷贝数据
       for (int y = 0; y < h; ++y) {
           // 计算源和目标的行偏移
-          size_t src_offset = (size_t)y * w * 3;
-          size_t dst_offset = (size_t)y * combined_w * 3;
+          size_t src_offset = (size_t)y * w * 4;
+          size_t dst_offset = (size_t)y * combined_w * 4;
 
           // 拷贝左图 (Image 0)
           std::memcpy(&combined_buffer[dst_offset], 
                       &img0[src_offset], 
-                      w * 3);
+                      w * 4);
 
           // 拷贝右图 (Image 1)，注意目标偏移要加上左图的宽度
-          std::memcpy(&combined_buffer[dst_offset + w * 3], 
+          std::memcpy(&combined_buffer[dst_offset + w * 4], 
                       &img1[src_offset], 
-                      w * 3);
+                      w * 4);
       }
 
       // 写入合并后的文件

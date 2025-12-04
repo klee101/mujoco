@@ -59,23 +59,20 @@ void AllocDeleter<host_mapped>::operator()(VkBuffer buffer) const
     if (!alloc_) return;
 
     if (mem_ == VK_NULL_HANDLE) return;
-    // const Device &dev = alloc_->dev;
 
-    // try {
-    //     dev.dt.unmapMemory(dev.hdl, mem_);
-    // } catch (...) {
-    //     // 记录错误但继续执行清理其他资源
-    //     std::cerr << "Warning: Failed to unmap memory" << std::endl;
-    // }
-    // // BUGFIX: Segmentation fault
-    // dev.dt.destroyBuffer(dev.hdl, buffer, nullptr);
-    // dev.dt.freeMemory(dev.hdl, mem_, nullptr);
-    return;
+    const Device &dev = alloc_->dev;
+
+    dev.dt.destroyBuffer(dev.hdl, buffer, nullptr);
+
+    dev.dt.freeMemory(dev.hdl, mem_, nullptr);
+
 }
 
 template <>
 void AllocDeleter<false>::operator()(VkImage image) const
 {
+    if (!alloc_) return;
+
     if (mem_ == VK_NULL_HANDLE) return;
 
     const Device &dev = alloc_->dev;

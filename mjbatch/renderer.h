@@ -7,14 +7,143 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <thread>
+#include <condition_variable>
+#include <future>
 #include <functional>
 #include <cstdint>
+#include <mutex>
+#include <queue>
+#include <functional>
 #include <vulkan/vulkan.h>
+#include <cstring>
+#include "memcpy_avx.h"
 #include "device.h"
 #include "backend.h"
 #include "render_context.h"
 #include "memory.h"
 #include "scene.h"
+
+#include <nvtx3/nvToolsExt.h> 
+
+// [辅助] 简单的 NVTX 颜色标记封装，让 Timeline 更漂亮
+struct ScopedNvtxRange {
+    ScopedNvtxRange(const char* name, uint32_t color_argb = 0xFFFFFFFF) {
+        nvtxEventAttributes_t eventAttrib = {0};
+        eventAttrib.version = NVTX_VERSION;
+        eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+        eventAttrib.colorType = NVTX_COLOR_ARGB;
+        eventAttrib.color = color_argb;
+        eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
+        eventAttrib.message.ascii = name;
+        nvtxRangePushEx(&eventAttrib);
+    }
+    ~ScopedNvtxRange() {
+        nvtxRangePop();
+    }
+};
+
+// 预定义颜色
+const uint32_t COLOR_PHYSICS = 0xFF00FF00; // 绿色
+const uint32_t COLOR_RENDER  = 0xFFFF0000; // 红色
+const uint32_t COLOR_WORKER  = 0xFFFFFF00; // 黄色
+const uint32_t COLOR_LOOP    = 0xFF00FFFF; // 青色
+// 定义不同阶段的颜色，方便一眼区分
+const uint32_t C_UPDATE = 0xFF00BFFF; // Deep Sky Blue (CPU 数据准备)
+const uint32_t C_RECORD = 0xFFFFA500; // Orange (Vulkan 指令录制)
+const uint32_t C_SUBMIT = 0xFF8A2BE2; // Blue Violet (提交与等待 GPU)
+const uint32_t C_READ   = 0xFF20B2AA; // Light Sea Green (回读数据)
+
+
+class ThreadPool {
+public:
+    ThreadPool(size_t threads) : stop(false) {
+        for(size_t i = 0; i < threads; ++i)
+            workers.emplace_back([this, i] { // 捕获 i 用于命名
+                // [NVTX] 1. 给线程命名，方便在 nsys 中识别
+                std::string thread_name = "Worker-Thread-" + std::to_string(i);
+                nvtxNameOsThreadA(pthread_self(), thread_name.c_str());
+
+                for(;;) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
+                        if(this->stop && this->tasks.empty())
+                            return;
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    // 执行任务
+                    task();
+                }
+            });
+    }
+
+    template<class F, class... Args>
+    auto enqueue(F&& f, Args&&... args) 
+        -> std::future<typename std::result_of<F(Args...)>::type> {
+        using return_type = typename std::result_of<F(Args...)>::type;
+
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+            
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            if(stop) throw std::runtime_error("enqueue on stopped ThreadPool");
+            tasks.emplace([task](){ (*task)(); });
+        }
+        condition.notify_one();
+        return res;
+    }
+
+    void ParallelFor(int count, const std::function<void(int start, int end)>& func) {
+        int num_workers = workers.size();
+        if (num_workers == 0) num_workers = 1;
+
+        int chunk_size = (count + num_workers - 1) / num_workers;
+        std::vector<std::future<void>> futures;
+        futures.reserve(num_workers);
+
+        for (int i = 0; i < num_workers; ++i) {
+            int start = i * chunk_size;
+            int end = std::min(start + chunk_size, count);
+            if (start >= end) break; 
+
+            futures.emplace_back(enqueue([func, start, end]() {
+                // [NVTX] 2. 标记 Worker 实际执行任务的时间段 (黄色)
+                // 这将显示在 Worker 线程的时间轴上
+                ScopedNvtxRange range("Physics_Worker_Job", COLOR_WORKER);
+                func(start, end);
+            }));
+        }
+
+        // Barrier: 等待所有任务完成
+        // 主线程在这里会进入 wait 状态 (pthread_cond_timedwait)
+        for (auto& f : futures) {
+            f.get();
+        }
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            stop = true;
+        }
+        condition.notify_all();
+        for(std::thread &worker: workers)
+            worker.join();
+    }
+
+private:
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
+};
 
 #define kMaxBindlessTextures 32
 // -----------------------------------------------------------------------------
@@ -98,9 +227,7 @@ struct TextureMapping {
 // 函数的返回结果结构体
 struct LoadedTextureResources {
     std::vector<MaterialTexture> textures_2d;
-    std::vector<MaterialTexture> textures_cube;
     std::vector<TextureMapping> global_texture_lookup;
-    std::vector<mujoco::mjbatch::HostBuffer> host_buffers;
 };
 
 // Push constants: model transform + material data
@@ -121,6 +248,17 @@ struct MeshEntry {
     uint32_t vertex_count;
     uint32_t index_count;
 };
+
+// feat: zero-copy, direct return the staging buffer pointer
+struct FrameObservation {
+    const uint8_t* data;      // 直接指向 Staging Buffer 的指针
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride_bytes;    // 行跨度 (Row Pitch)，这对于后续处理非常重要
+    size_t total_bytes;       // 数据总大小
+};
+
+
 // -----------------------------------------------------------------------------
 // Main Batch Renderer Class
 // -----------------------------------------------------------------------------
@@ -134,7 +272,7 @@ public:
 
     BatchRenderer(const BatchRenderer&) = delete;
     BatchRenderer& operator=(const BatchRenderer&) = delete;
-    BatchRenderer(BatchRenderer&&) noexcept;
+    // BatchRenderer(BatchRenderer&&) noexcept;
     BatchRenderer& operator=(BatchRenderer&&) noexcept;
 
     // Core Rendering Interface
@@ -244,17 +382,19 @@ private:
     // feat: texture
     LoadedTextureResources material_textures_;
     VkSampler texture_sampler_;
-    // 新增成员变量：存储每个模型的纹理全局起始索引
-    // texture_offsets_[i] 表示第 i 个模型在 global_texture_lookup 中的起始位置
     std::vector<int> texture_offsets_;
 
     // Output buffers
+    std::vector<FrameObservation> frames;
+
     std::vector<unsigned char> rgb_buffer_;
     std::vector<float> depth_buffer_;
 
     RenderStats last_stats_;
     bool initialized_ = false;
     uint64_t frame_counter_ = 0;
+
+    ThreadPool pool;
 };
 
 // -----------------------------------------------------------------------------

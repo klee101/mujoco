@@ -159,6 +159,7 @@ struct TextureInfo {
     std::vector<uint8_t> data;  // Raw texture data (RGBA)
     int texture_id;              // MuJoCo texture ID
     int type; // 0：2d 1：cube 2：skybox
+    std::string name; // texture name
 };
 
 // Main Scene class - provides render-ready data

@@ -67,12 +67,8 @@ ConstantBuffer<PushConstants> pushConst;
 
 // Binding 0: 2D Texture Array
 Texture2D g_textures[] : register(t0, space1);
-
-// Binding 1: Cube Texture Array
-TextureCube g_cube_textures[] : register(t1, space1);
-
 // Binding 2: Sampler
-SamplerState g_sampler : register(s2, space1);
+SamplerState g_sampler : register(s1, space1);
 
 struct PSInput {
     float4 position : SV_Position;
@@ -117,6 +113,39 @@ float3 ACESToneMapping(float3 color) {
     const float D = 0.59f;
     const float E = 0.14f;
     return saturate((color * (A * color + B)) / (color * (C * color + D) + E));
+}
+
+// ============================================================================
+// [NEW] CUBE MAP PROJECTION HELPER
+// ============================================================================
+// 手动计算 CubeMap 投影。
+// 假设所有面都使用同一张 2D 纹理，因此我们只计算 Local UV，不需要根据面 ID 偏移。
+float2 CalculateCubeUV(float3 v) {
+    float3 vAbs = abs(v);
+    float ma; // Major Axis Magnitude
+    float2 uv;
+    
+    // 逻辑：找出绝对值最大的轴，然后将另外两个轴投影到该平面
+    // 注意：这里的正负号翻转取决于你的纹理坐标系 (Vulkan 通常 Y 向下，世界坐标 Y 向上)
+    // 如果发现贴图颠倒或旋转，请调整这里的 uv 赋值顺序或符号。
+    
+    if(vAbs.z >= vAbs.x && vAbs.z >= vAbs.y) {
+        // Front / Back Face
+        ma = vAbs.z;
+        uv = float2(v.x, -v.y); 
+    } else if(vAbs.y >= vAbs.x) {
+        // Top / Bottom Face
+        ma = vAbs.y;
+        uv = float2(v.x, v.z);
+    } else {
+        // Left / Right Face
+        ma = vAbs.x;
+        uv = float2(v.z, -v.y);
+    }
+    
+    // 透视除法: 映射到 [-1, 1]
+    // 然后 * 0.5 + 0.5 映射到 [0, 1]
+    return (uv / ma) * 0.5 + 0.5;
 }
 // ============================================================================
 // LIGHTING CALCULATION
@@ -208,15 +237,28 @@ float4 PSMain(PSInput input) : SV_Target {
     float4 base_color = pushConst.material_rgba * input.color;
     
     // Texture Logic
-    if (pushConst.texture_type == 0 && pushConst.texture_index >= 0) {
-        // 2D Texture
-        float4 tex = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
-        base_color *= tex;
-    } else if (pushConst.texture_type == 1 && pushConst.texture_index >= 0) {
-        // Cube Texture (Skybox logic)
-        float3 uvw = normalize(input.sample_vec);
-        float4 tex = g_cube_textures[pushConst.texture_index].Sample(g_sampler, uvw);
-        base_color *= tex;
+    if (pushConst.texture_index >= 0) {
+        if (pushConst.texture_type == 0) {
+            // [CASE 0] Standard 2D Texture
+            float4 tex = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
+            base_color *= tex;
+        } 
+        else if (pushConst.texture_type == 1) {
+            // [CASE 1] Simulated Cube Texture (using 2D array)
+            // 原逻辑: g_cube_textures[...].Sample(..., uvw);
+            // 新逻辑: 手动计算投影 UV -> 采样 2D 数组
+            
+            float3 uvw = normalize(input.sample_vec); // 或者是 input.world_pos - camera_pos，取决于你的顶点着色器传参
+            
+            // [+] 调用手动计算函数
+            float2 cube_uv = CalculateCubeUV(uvw);
+            
+            // [+] 使用计算出的 UV 采样 2D 纹理数组
+            // 注意：texture_index 现在指向的是 stored in textures_2d 的那个"原本是cube"的纹理
+            float4 tex = g_textures[pushConst.texture_index].Sample(g_sampler, cube_uv);
+            
+            base_color *= tex;
+        }
     }
 
     // Unlit Logic check (if texture_type is -1 and emission is super high, maybe unlit?)

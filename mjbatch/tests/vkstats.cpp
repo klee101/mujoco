@@ -8,6 +8,7 @@ g++ -shared -fPIC -O2 -o libvkstats.so vkstats.cpp \
 cd /home/hpf/project/vulkan/mujoco/mujoco/build
 LD_PRELOAD=/home/hpf/project/vulkan/mujoco/mujoco/mjbatch/tests/libvkstats.so ./bin/benchmark_test
 
+// use addr2line to find the code line of the addresses printed in the call stack 
 addr2line -e ./bin/benchmark_test 0x418c0 0xf033 0x11ad3 0xc6df
 
 */
@@ -20,7 +21,6 @@ addr2line -e ./bin/benchmark_test 0x418c0 0xf033 0x11ad3 0xc6df
 #include <atomic>
 #include <string.h>
 
-// [新增] 包含 backtrace 所需头文件
 #include <execinfo.h>
 #include <cxxabi.h>  // 用于解开 C++ 函数名 (Demangle)
 

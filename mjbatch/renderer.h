@@ -362,7 +362,7 @@ private:
     // Command buffers and synchronization
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> command_buffers_;
-    std::vector<VkFence> render_fences_;
+    VkFence render_fence_;
 
     // Staging buffers for readback
     std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;

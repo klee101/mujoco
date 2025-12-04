@@ -105,7 +105,7 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         depth_image_views_ = std::move(other.depth_image_views_);
         command_pool_ = other.command_pool_;
         command_buffers_ = std::move(other.command_buffers_);
-        render_fences_ = std::move(other.render_fences_);
+        render_fence_ = std::move(other.render_fence_);
         staging_buffers_ = std::move(other.staging_buffers_);
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
         global_index_buffer_ = std::move(other.global_index_buffer_);
@@ -1069,79 +1069,49 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
 bool BatchRenderer::SubmitAndWait() {
     Device &dev = *device_;
     VkQueue queue = render_context_->renderQueue;
+    const uint64_t TIMEOUT_NS = 10000000000ULL; // 10s timeout 
+    // --- 1. 准备阶段：重置 Fence ---
+    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &render_fence_));
+
+    // --- 2. 准备提交信息 (Batching) ---
+    // 这里的关键是：将所有 command buffers 填入同一个 VkSubmitInfo
+    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submitInfo.commandBufferCount = (uint32_t)command_buffers_.size();
+    submitInfo.pCommandBuffers = command_buffers_.data(); // 指向 vector 的数据首地址
     
-    const uint64_t TIMEOUT_NS = 5000000000ULL; // 5秒超时
-    const uint64_t QUICK_CHECK_NS = 0;         // 0秒超时用于快速检测
-    char log_buf[256];
+
+    // --- 3. 一次性提交 (One Submit) ---
+    // 这是一个原子操作，驱动会把这一堆 CmdBuffer 一口气喂给 GPU
+    VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, render_fence_);
     
-    for (size_t i = 0; i < command_buffers_.size(); ++i) {
-        // snprintf(log_buf, sizeof(log_buf), "Processing fence %zu...", i);
-        // LOG(config_, log_buf);
-        
-        // 使用0超时快速检查fence是否已signaled
-        VkResult quickCheck = dev.dt.waitForFences(
-            dev.hdl,
-            1,
-            &render_fences_[i],
-            VK_TRUE,
-            QUICK_CHECK_NS
-        );
-        
-        if (quickCheck == VK_SUCCESS) {
-            resetFence(dev, render_fences_[i]);
-        } else if (quickCheck == VK_TIMEOUT) {
-            // Fence未signaled（首次使用或有问题）
-            // snprintf(log_buf, sizeof(log_buf), "  Fence %zu not signaled (first use), resetting", i);
-            // LOG(config_, log_buf);
-            resetFence(dev, render_fences_[i]);
-        } else {
-            // 错误
-            snprintf(log_buf, sizeof(log_buf), "ERROR: Fence %zu check failed: %d", i, quickCheck);
-            LOG(config_, log_buf);
-            return false;
-        }
-        
-        // 提交命令
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &command_buffers_[i];
-        
-        VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, render_fences_[i]);
-        if (submitResult != VK_SUCCESS) {
-            snprintf(log_buf, sizeof(log_buf), "ERROR: queueSubmit %zu failed: %d", i, submitResult);
-            LOG(config_, log_buf);
-            return false;
-        }
-        
-        // snprintf(log_buf, sizeof(log_buf), "  Fence %zu submitted", i);
-        // LOG(config_, log_buf);
+    if (submitResult != VK_SUCCESS) {
+        char log_buf[256];
+        snprintf(log_buf, sizeof(log_buf), "ERROR: Batch queueSubmit failed: %d", submitResult);
+        LOG(config_, log_buf);
+        return false;
     }
-    
-    // LOG(config_, "All submissions complete, waiting for completion...");
-    
-    // 等待所有fence完成
-    for (size_t i = 0; i < render_fences_.size(); ++i) {
-        VkResult result = dev.dt.waitForFences(
+
+    // --- 4. 一次性等待 (One Wait) ---
+    {
+        // 加上 NVTX 标记方便你在 Nsight Systems 里验证优化效果
+        ScopedNvtxRange range("CPU_Wait_Fence", 0xFF800000); 
+        
+        VkResult waitResult = dev.dt.waitForFences(
             dev.hdl,
             1,
-            &render_fences_[i],
-            VK_TRUE,
+            &render_fence_,
+            VK_TRUE, // Wait All (虽然只有一个)
             TIMEOUT_NS
         );
-        
-        if (result == VK_TIMEOUT) {
-            snprintf(log_buf, sizeof(log_buf), "ERROR: Final fence %zu timeout! GPU may have hung.", i);
-            LOG(config_, log_buf);
-            return false;
-        } else if (result != VK_SUCCESS) {
-            snprintf(log_buf, sizeof(log_buf), "ERROR: Final fence %zu wait failed: %d", i, result);
+
+        if (waitResult != VK_SUCCESS) {
+            char log_buf[256];
+            snprintf(log_buf, sizeof(log_buf), "ERROR: Batch fence wait failed: %d", waitResult);
             LOG(config_, log_buf);
             return false;
         }
     }
     
-    // LOG(config_, "All fences completed successfully");
     return true;
 }
 
@@ -1628,10 +1598,7 @@ bool BatchRenderer::CreateBuffers() {
     REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &allocCmdInfo, command_buffers_.data()));
     
     // Create fences
-    render_fences_.resize(config_.batch_size);
-    for (auto &fence : render_fences_) {
-        fence = makeFence(dev, false);
-    }
+    render_fence_ = makeFence(dev, false);
 
     // Create descriptor pool
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
@@ -1881,12 +1848,10 @@ void BatchRenderer::DestroyVulkanResources() {
     }
     
     // Destroy fences
-    for (auto &fence : render_fences_) {
-        if (fence != VK_NULL_HANDLE) {
-            dev.dt.destroyFence(dev.hdl, fence, nullptr);
-        }
+    if(render_fence_ != VK_NULL_HANDLE) {
+        dev.dt.destroyFence(dev.hdl, render_fence_, nullptr);
+        render_fence_ = VK_NULL_HANDLE;
     }
-    render_fences_.clear();
     
     // Staging buffers are destroyed via HostBuffer destructors
     staging_buffers_.clear();
@@ -1907,7 +1872,7 @@ const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {
     return frames[batch_idx].data;
 }
 
-// now invalid because we do zero-copy readback
+// TODO: this func is now invalid because we do zero-copy readback
 const float* BatchRenderer::GetDepthFrame(int batch_idx) const {
     if (!config_.enable_depth) return nullptr;
     if (batch_idx < 0 || batch_idx >= config_.batch_size) return nullptr;

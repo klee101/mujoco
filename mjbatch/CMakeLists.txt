@@ -156,23 +156,6 @@ target_link_libraries(renderer PUBLIC
 
 add_dependencies(renderer generate_dispatch)
 
-# Build samples that require GLFW.
-add_executable(record_vk record_vk.cc array_safety.h)
-target_compile_options(record_vk PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(
-  record_vk
-  renderer
-)
-target_link_options(record_vk PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
-add_executable(vertex_check vertex_check.cc array_safety.h)
-target_compile_options(vertex_check PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(
-  vertex_check
-  renderer
-)
-target_link_options(vertex_check PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
 set(DXC_EXECUTABLE "${CMAKE_SOURCE_DIR}/mjbatch/dxc/bin/dxc")
 add_subdirectory(shaders)
 

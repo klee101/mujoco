@@ -66,14 +66,12 @@ ObjectManager::ObjectManager(const mjModel* model,
   shapes_[kCylinder] = GeometryBuilder::BuildCylinder(model->vis.quality.numstacks, model->vis.quality.numslices);
   
 
-  // TODO: Load meshes and height fields on demand
 }
 
 ObjectManager::~ObjectManager() {
 
 }
 
-// TODO: Implement Texture uploads
 
 
 
@@ -108,7 +106,6 @@ const GeometryBuffers* ObjectManager::GetMeshBuffer(int data_id) const {
       return &it->second;
     }
 
-    // [FIX] 处理 TODO: 构建 Convex Hull
     if (mesh_id >= 0 && mesh_id < model_->nmesh) {
         // 通常凸包的几何数据可以用原始 Mesh 近似，或者 MuJoCo 有专门的 graph
         // 这里我们复用 BuildConvexHull (在 builtin 中实现为调用 BuildMesh)

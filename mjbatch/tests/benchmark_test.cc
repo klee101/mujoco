@@ -13,29 +13,25 @@
 #include <algorithm>
 #include <vector> 
 
-// ---- Benchmark 配置 ----
-const int BATCH_SIZE = 32;      
+// ---- Benchmark config ----
+const int BATCH_SIZE = 64;      
 const int FRAME_WIDTH = 640;
 const int FRAME_HEIGHT = 480;
 const int BENCHMARK_STEPS = 100; 
 const int WARMUP_STEPS = 10;
+
+// hard code the model path
 const std::string MODEL_XML = "/home/hpf/project/vulkan/mujoco/mujoco/build/model/lift.xml";
 
-
-
-// 输入: rgba_data (指向 RGBA 数据，每像素4字节)
-// 输出: 标准 PPM 文件 (每像素3字节，丢弃 Alpha)
+// Input: rgba_data from BatchRenderer::GetRGBFrame()
+// Output: standard PPM file
 static bool write_ppm(const std::string& path, const unsigned char* rgba_data, int w, int h) {
     std::ofstream ofs(path, std::ios::binary);
     if (!ofs) return false;
-
-    // 1. 写入 P6 头 (P6 代表二进制 RGB)
     ofs << "P6\n" << w << " " << h << "\n255\n";
 
-    // 2. 创建一行 RGB 数据的缓存 (减少磁盘 I/O 次数)
     std::vector<unsigned char> row_buffer(w * 3);
 
-    // 3. 逐行转换并写入
     for (int y = 0; y < h; ++y) {
         const unsigned char* src_row = rgba_data + (size_t)y * w * 4; // 源指针 (RGBA)
         unsigned char* dst_row = row_buffer.data();                   // 目标指针 (RGB)
@@ -44,10 +40,9 @@ static bool write_ppm(const std::string& path, const unsigned char* rgba_data, i
             dst_row[x * 3 + 0] = src_row[x * 4 + 0]; // R
             dst_row[x * 3 + 1] = src_row[x * 4 + 1]; // G
             dst_row[x * 3 + 2] = src_row[x * 4 + 2]; // B
-            // src_row[x * 4 + 3] (Alpha) 被忽略
+            // src_row[x * 4 + 3] (Alpha) ignored
         }
 
-        // 将这一行 RGB 数据写入文件
         ofs.write(reinterpret_cast<const char*>(row_buffer.data()), w * 3);
     }
 
@@ -55,14 +50,13 @@ static bool write_ppm(const std::string& path, const unsigned char* rgba_data, i
 }
 
 int main() {
-    // [NVTX] 给主线程命名
     nvtxNameOsThreadA(pthread_self(), "Main-Thread");
 
     int hw_threads = std::thread::hardware_concurrency();
     int pool_size = (hw_threads > 1) ? hw_threads : 1;
 
     printf("======================================\n");
-    printf("⚡ Vulkan Renderer Benchmark (NVTX Instrumented)\n");
+    printf("   Vulkan Renderer Benchmark (NVTX Instrumented)\n");
     printf("   Batch Size:  %d\n", BATCH_SIZE);
     printf("   Pool Size:   %d Threads\n", pool_size);
     printf("======================================\n");
@@ -116,7 +110,7 @@ int main() {
     total_loop_times.reserve(BENCHMARK_STEPS);
 
     for (int step = 0; step < BENCHMARK_STEPS; ++step) {
-        // [NVTX] 3. 标记每一帧的总时间 (青色)
+        // [NVTX] 3. sign frame loop (Blue)
         ScopedNvtxRange frameRange("Frame_Loop", COLOR_LOOP);
 
         auto t_loop_start = std::chrono::high_resolution_clock::now();
@@ -124,13 +118,10 @@ int main() {
         double time_val = step * 0.05;
         
         {
-            // [NVTX] 4. 标记物理计算总耗时 (主线程视角, 绿色)
-            // 这段时间主线程大部分在 Wait，但可以看到它对应的是 Workers 在忙碌
+            // [NVTX] 4. sign physics (Green)
             ScopedNvtxRange physRange("Physics_Step_Total", COLOR_PHYSICS);
 
             pool.ParallelFor(BATCH_SIZE, [&](int start, int end) {
-                // 注意：这里已经在 Worker 线程内部了，但 ScopedNvtxRange 已经在 ParallelFor 内部定义了
-                // 如果需要更细粒度（例如每次 mj_forward），可以在这里加，但会产生太多数据
                 for (int i = start; i < end; ++i) {
                     if (models[i]->nq > 0) {
                         datas[i]->qpos[0] = std::sin(time_val + i * 0.01);
@@ -143,7 +134,7 @@ int main() {
         auto t1 = std::chrono::high_resolution_clock::now();
         RenderResult result;
         {
-            // [NVTX] 5. 标记渲染提交耗时 (红色)
+            // [NVTX] 5. sign the render_submit (Red)
             ScopedNvtxRange renderRange("Render_Submit", COLOR_RENDER);
             result = renderer->Render(datas.data(), nullptr);
         }
@@ -165,7 +156,6 @@ int main() {
     }
     printf("\n");
 
-    // ... (统计和清理代码保持不变) ...
     if (!render_times.empty()) {
         auto calc_stats = [](const std::vector<double>& times, const char* label) {
             double total = std::accumulate(times.begin(), times.end(), 0.0);

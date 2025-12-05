@@ -72,7 +72,6 @@ struct CameraUBO {
     float padding4;
 };
 
-// TODO: extract the lighting information from scene
 struct LightInfo {
     glm::vec3 position;
     uint32_t type;  // 0: spot, 1: directional, 2: point
@@ -133,7 +132,7 @@ struct LightInfo {
 };
 
 // [MODIFIED] Render-ready drawable object
-// 不再持有几何数据指针，而是持有“Key”用于全局查找
+// 不再持有几何数据指针，而是持有Key(name)用于全局查找
 struct Drawable {
     // Identify the geometry in the Global Buffer
     // 对于 Mesh，这是 xml 中的 mesh name   

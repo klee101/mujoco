@@ -52,7 +52,7 @@ static constexpr VkImageUsageFlags depthAttachmentUsage =
 
 };
 
-// TODO: Fix the deleter to actually free resources
+
 template <bool host_mapped>
 void AllocDeleter<host_mapped>::operator()(VkBuffer buffer) const
 {

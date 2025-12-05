@@ -413,9 +413,6 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
     return result;
 }
 
-// TODO: finish the DedupMeshData function
-// TODO: use two mjmodel to test firstly
-// TODO: use the megaVertex/index buffer
 // ---------------------------- Load and Deduplicate Vertices ------------------------
 void BatchRenderer::InitGlobalGeometry() {
     LOG(config_, "InitGlobalGeometry(): Starting mesh deduplication and upload...");
@@ -737,8 +734,8 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
 // -------------------------------------------------------
-    // Phase 1: Update Scenes (CPU 计算密集型)
-    // 这里的耗时代表：从 mjData 提取骨骼变换并拷贝到 Staging Buffer 的时间
+    // Phase 1: Update Scenes (CPU work)
+    // TODO: multi-threading
     // -------------------------------------------------------
     {
         ScopedNvtxRange range("1. Update_Scenes (CPU)", C_UPDATE);
@@ -748,8 +745,8 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     }
 
     // -------------------------------------------------------
-    // Phase 2: Record Command Buffers (CPU/Driver 开销)
-    // 这里的耗时代表：生成 Vulkan 渲染指令的时间
+    // Phase 2: Record Command Buffers (CPU/Driver)
+    // TODO: check the pushConstants performance impact
     // -------------------------------------------------------
     {
         ScopedNvtxRange range("2. Record_Cmds (Driver)", C_RECORD);
@@ -759,9 +756,8 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     }
 
     // -------------------------------------------------------
-    // Phase 3: Submit & Wait (CPU 阻塞 / GPU 执行)
+    // Phase 3: Submit & Wait (CPU block / GPU render)
     // 这里的耗时代表：vkQueueSubmit + vkWaitForFences
-    // 在 nsys 中，这段时间 CPU 处于 Wait 状态，而 GPU 处于 Active 状态
     // -------------------------------------------------------
     {
         ScopedNvtxRange range("3. Submit_Wait (GPU)", C_SUBMIT);
@@ -771,10 +767,8 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     }
 
     // -------------------------------------------------------
-    // !!!! 主要耗时在这里 !!!!
     // Phase 4: Readback (PCIe 传输)
-    // 这里的耗时代表：vkCmdCopyImageToBuffer (GPU端) 完成后，
-    // CPU 映射内存并将像素数据从显存/Staging拷贝出来的开销
+    // vkCmdCopyImageToBuffer (GPU -> CPU)
     // -------------------------------------------------------
     {
         ScopedNvtxRange range("4. Readback_Pixels (PCIe)", C_READ);
@@ -793,7 +787,6 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
 }
 
 // --------------------------- Internal Stages ---------------------------------
-// TODO: solve the Material issues, upload as a decriptor set per-scene
 bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
     Device &dev = *device_;
 
@@ -1579,8 +1572,7 @@ bool BatchRenderer::CreateFramebuffers() {
     return true;
 }
 
-
-// TODO: Now the Material UBO actually invalid, use push constants instead
+// TODO: Now the Material UBO actually invalid, use push constants instead,may need to optimize later
 bool BatchRenderer::CreateBuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
@@ -1707,7 +1699,6 @@ bool BatchRenderer::CreateBuffers() {
         writes[1].descriptorCount = 1;
         writes[1].pBufferInfo = &lightBufferInfo;
         
-        // TODO: Add the texture sampler descriptor
         dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
     }
 
@@ -1873,6 +1864,7 @@ const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {
 }
 
 // TODO: this func is now invalid because we do zero-copy readback
+// now depth data is not used, may optimize later
 const float* BatchRenderer::GetDepthFrame(int batch_idx) const {
     if (!config_.enable_depth) return nullptr;
     if (batch_idx < 0 || batch_idx >= config_.batch_size) return nullptr;

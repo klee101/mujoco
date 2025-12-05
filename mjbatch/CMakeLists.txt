@@ -134,7 +134,6 @@ add_library(renderer STATIC
   backend.h            backend.cc
   dispatch.hpp         dispatch.cpp
   scene.h              scene.cc
-  object_manager.h     object_manager.cc
   builtin.h            builtin.cc
   utils.h              
   vkutils.h            vkutils.cc           vkutils.inl

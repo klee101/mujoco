@@ -8,20 +8,6 @@
 namespace mujoco{
 namespace mjbatch {
 
-// struct MaterialTexture {
-//     MaterialTexture(mujoco::mjbatch::LocalTexture &&src_image,
-//                     VkImageView src_view,
-//                     VkDeviceMemory src_backing)
-//         : image(std::move(src_image)), view(src_view), backing(src_backing)
-//     {
-//     }
-
-//     mujoco::mjbatch::LocalTexture image;
-//     VkImageView view;
-//     VkDeviceMemory backing;
-// };
-// RenderContext：a global context all scenes need to be batch rendered 
-
 struct RenderContext
 {
     Device &device;

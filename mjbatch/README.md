@@ -16,6 +16,7 @@ cmake -S . -B build \
 ````
 
 ### 2\. 编译目标 
+vulkan程序的运行依赖于shader的spv文件，这里通过CompileShaders自动编译并生成spv文件
 
 编译 C++ Benchmark 程序及着色器：
 
@@ -36,7 +37,7 @@ cmake --build build --config Release --target CompileShaders --parallel
 
 ### 4\. 一键运行脚本
 
-为了简化流程，可以直接运行提供的 Python 脚本，它会自动处理配置、编译、运行及图像格式转换：
+为了简化流程，可以直接运行提供的 Python 脚本，它会直接执行上面的流程并且把程序输出的PPM文件转化为可视的png图像（需要下载图像转换对应的库）
 
 ```bash
 python run_benchmark.py

@@ -8,7 +8,6 @@
 #include <glm/gtc/type_ptr.hpp>       
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
-#include "object_manager.h"
 #include "builtin.h"
 #include "utils.h"
 

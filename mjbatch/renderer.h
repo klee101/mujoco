@@ -26,7 +26,6 @@
 
 #include <nvtx3/nvToolsExt.h> 
 
-// [辅助] 简单的 NVTX 颜色标记封装，让 Timeline 更漂亮
 struct ScopedNvtxRange {
     ScopedNvtxRange(const char* name, uint32_t color_argb = 0xFFFFFFFF) {
         nvtxEventAttributes_t eventAttrib = {0};
@@ -43,12 +42,10 @@ struct ScopedNvtxRange {
     }
 };
 
-// 预定义颜色
 const uint32_t COLOR_PHYSICS = 0xFF00FF00; // 绿色
 const uint32_t COLOR_RENDER  = 0xFFFF0000; // 红色
 const uint32_t COLOR_WORKER  = 0xFFFFFF00; // 黄色
 const uint32_t COLOR_LOOP    = 0xFF00FFFF; // 青色
-// 定义不同阶段的颜色，方便一眼区分
 const uint32_t C_UPDATE = 0xFF00BFFF; // Deep Sky Blue (CPU 数据准备)
 const uint32_t C_RECORD = 0xFFFFA500; // Orange (Vulkan 指令录制)
 const uint32_t C_SUBMIT = 0xFF8A2BE2; // Blue Violet (提交与等待 GPU)
@@ -59,8 +56,7 @@ class ThreadPool {
 public:
     ThreadPool(size_t threads) : stop(false) {
         for(size_t i = 0; i < threads; ++i)
-            workers.emplace_back([this, i] { // 捕获 i 用于命名
-                // [NVTX] 1. 给线程命名，方便在 nsys 中识别
+            workers.emplace_back([this, i] { 
                 std::string thread_name = "Worker-Thread-" + std::to_string(i);
                 nvtxNameOsThreadA(pthread_self(), thread_name.c_str());
 
@@ -74,7 +70,6 @@ public:
                         task = std::move(this->tasks.front());
                         this->tasks.pop();
                     }
-                    // 执行任务
                     task();
                 }
             });
@@ -113,15 +108,11 @@ public:
             if (start >= end) break; 
 
             futures.emplace_back(enqueue([func, start, end]() {
-                // [NVTX] 2. 标记 Worker 实际执行任务的时间段 (黄色)
-                // 这将显示在 Worker 线程的时间轴上
                 ScopedNvtxRange range("Physics_Worker_Job", COLOR_WORKER);
                 func(start, end);
             }));
         }
 
-        // Barrier: 等待所有任务完成
-        // 主线程在这里会进入 wait 状态 (pthread_cond_timedwait)
         for (auto& f : futures) {
             f.get();
         }
@@ -224,7 +215,7 @@ struct TextureMapping {
     int index_in_array; // 在对应的 vector<MaterialTexture> 中的下标
 };
 
-// 函数的返回结果结构体
+
 struct LoadedTextureResources {
     std::vector<MaterialTexture> textures_2d;
     std::vector<TextureMapping> global_texture_lookup;
@@ -251,11 +242,11 @@ struct MeshEntry {
 
 // feat: zero-copy, direct return the staging buffer pointer
 struct FrameObservation {
-    const uint8_t* data;      // 直接指向 Staging Buffer 的指针
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride_bytes;    // 行跨度 (Row Pitch)，这对于后续处理非常重要
-    size_t total_bytes;       // 数据总大小
+    const uint8_t* data;      // Staging Buffer Pointer
+    uint32_t width;           // image width
+    uint32_t height;          // image height
+    uint32_t stride_bytes;    // Row Pitch
+    size_t total_bytes;      
 };
 
 
@@ -272,7 +263,6 @@ public:
 
     BatchRenderer(const BatchRenderer&) = delete;
     BatchRenderer& operator=(const BatchRenderer&) = delete;
-    // BatchRenderer(BatchRenderer&&) noexcept;
     BatchRenderer& operator=(BatchRenderer&&) noexcept;
 
     // Core Rendering Interface
@@ -367,7 +357,6 @@ private:
     // Staging buffers for readback
     std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;
 
-    // [ADD] +++ 添加全局 Buffer 和 缓存表
     std::optional<mujoco::mjbatch::LocalBuffer> global_vertex_buffer_;
     std::optional<mujoco::mjbatch::LocalBuffer> global_index_buffer_;
     std::unordered_map<std::string, MeshEntry> global_mesh_cache_;
@@ -397,9 +386,4 @@ private:
     ThreadPool pool;
 };
 
-// -----------------------------------------------------------------------------
-// Utility Functions
-// -----------------------------------------------------------------------------
-std::vector<std::string> EnumerateGPUs();
-bool IsGPUSupported(int gpu_id);
 

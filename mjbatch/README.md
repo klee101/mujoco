@@ -19,7 +19,7 @@ cmake -S . -B build \
 vulkan程序的运行依赖于shader的spv文件，这里通过CompileShaders自动编译并生成spv文件
 
 编译 C++ Benchmark 程序及着色器：
-
+cd
 ```bash
 # 编译主程序
 cmake --build build --config Release --target benchmark_test --parallel

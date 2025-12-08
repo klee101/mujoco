@@ -119,15 +119,10 @@ float3 ACESToneMapping(float3 color) {
 // [NEW] CUBE MAP PROJECTION HELPER
 // ============================================================================
 // 手动计算 CubeMap 投影。
-// 假设所有面都使用同一张 2D 纹理，因此我们只计算 Local UV，不需要根据面 ID 偏移。
 float2 CalculateCubeUV(float3 v) {
     float3 vAbs = abs(v);
     float ma; // Major Axis Magnitude
     float2 uv;
-    
-    // 逻辑：找出绝对值最大的轴，然后将另外两个轴投影到该平面
-    // 注意：这里的正负号翻转取决于你的纹理坐标系 (Vulkan 通常 Y 向下，世界坐标 Y 向上)
-    // 如果发现贴图颠倒或旋转，请调整这里的 uv 赋值顺序或符号。
     
     if(vAbs.z >= vAbs.x && vAbs.z >= vAbs.y) {
         // Front / Back Face
@@ -142,9 +137,7 @@ float2 CalculateCubeUV(float3 v) {
         ma = vAbs.x;
         uv = float2(v.z, -v.y);
     }
-    
-    // 透视除法: 映射到 [-1, 1]
-    // 然后 * 0.5 + 0.5 映射到 [0, 1]
+
     return (uv / ma) * 0.5 + 0.5;
 }
 // ============================================================================

@@ -756,7 +756,7 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
             // Update the transforms 
              res.render_scene->Update(models_[i], &res.scene, data_array[i]);
          }
-        
+         
         // Choose the view, update the camera Info
         int cam_id = res.render_scene->FindCameraID(models_[i], "frontview");
         // 1.77 = 16:9 aspect ratio
@@ -821,8 +821,9 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
         PerEnvResources &res = env_resources_[i];
         
         // --- 1. Begin Recording & Render Pass ---
+        // change: one time submit for better performance
         VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
         
         VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -1449,30 +1450,31 @@ bool BatchRenderer::CreateBuffers() {
     
     // Create fences
     render_fence_ = makeFence(dev, false);
-
-    // Create descriptor pool
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = config_.batch_size; // Camera UBOs
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = config_.batch_size; // Light UBOs
-    
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = config_.batch_size;
-    REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &descriptor_pool_));
-    
-    // Allocate descriptor sets
-    descriptor_sets_.resize(config_.batch_size);
-    std::vector<VkDescriptorSetLayout> layouts(config_.batch_size, descriptor_set_layout_);
-    VkDescriptorSetAllocateInfo allocDesInfo{};
-    allocDesInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocDesInfo.descriptorPool = descriptor_pool_;
-    allocDesInfo.descriptorSetCount = config_.batch_size;
-    allocDesInfo.pSetLayouts = layouts.data();
-    REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocDesInfo, descriptor_sets_.data()));
+    {
+        // Create descriptor pool
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = config_.batch_size; // Camera UBOs
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[1].descriptorCount = config_.batch_size; // Light UBOs
+        
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
+        poolInfo.maxSets = config_.batch_size;
+        REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &descriptor_pool_));
+        
+        // Allocate descriptor sets
+        descriptor_sets_.resize(config_.batch_size);
+        std::vector<VkDescriptorSetLayout> layouts(config_.batch_size, descriptor_set_layout_);
+        VkDescriptorSetAllocateInfo allocDesInfo{};
+        allocDesInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocDesInfo.descriptorPool = descriptor_pool_;
+        allocDesInfo.descriptorSetCount = config_.batch_size;
+        allocDesInfo.pSetLayouts = layouts.data();
+        REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocDesInfo, descriptor_sets_.data()));
+    }
     {
         // Create global texture descriptor set for bindless textures
         // here use a independent pool and set for global textures

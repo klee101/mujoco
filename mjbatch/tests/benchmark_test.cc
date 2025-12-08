@@ -14,7 +14,7 @@
 #include <vector> 
 
 // ---- Benchmark config ----
-const int BATCH_SIZE = 64;      
+const int BATCH_SIZE = 4;      
 const int FRAME_WIDTH = 640;
 const int FRAME_HEIGHT = 480;
 const int BENCHMARK_STEPS = 100; 

@@ -13,18 +13,17 @@ static std::wstring toWString(const std::string &str) {
     return converter.from_bytes(str);
 }
 
-// 新函数：自动为目标添加 _6_7 后缀（如果没有显式指定版本）
+
 static std::string ensureShaderModel67(const std::string& target) {
-    // 如果目标已经包含下划线版本号，保持原样
+
     if (target.find('_') != std::string::npos) {
         return target;
     }
     
-    // 否则添加 _6_7 后缀
     return target + "_6_7";
 }
 
-// 新函数：获取着色器阶段类型字符串（基于你之前提供的代码）
+
 static std::wstring getStageTypeString(const std::string& entry, const std::string& target) {
     // 如果入口函数为空，认为是库着色器
     if (entry.empty()) {
@@ -54,7 +53,6 @@ static std::wstring getStageTypeString(const std::string& entry, const std::stri
     } else if (prefix == "lib" || prefix == "library") {
         return L"lib_6_7";
     } else {
-        // 默认使用库着色器
         std::cerr << "Warning: Unknown shader target '" << target << "', defaulting to lib_6_7\n";
         return L"lib_6_7";
     }
@@ -121,23 +119,21 @@ bool CompileHLSLtoSPV(const std::string &input,
         L"-E", wEntry.c_str()
     };
 
-    // 添加优化级别
     if (options.optimizationLevel > 0) {
         switch (options.optimizationLevel) {
             case 1: args.push_back(L"-O1"); break;
             case 2: args.push_back(L"-O2"); break;
             case 3: args.push_back(L"-O3"); break;
-            default: args.push_back(L"-Od"); break; // 无优化
+            default: args.push_back(L"-Od"); break; 
         }
     }
 
-    // 添加调试信息
+
     if (options.includeDebugInfo) {
-        args.push_back(L"-Zi"); // 调试信息
-        args.push_back(L"-Qembed_debug"); // 嵌入调试信息
+        args.push_back(L"-Zi"); 
+        args.push_back(L"-Qembed_debug"); 
     }
 
-    // 添加其他用户定义的参数
     for (const auto& extraArg : options.extraArgs) {
         args.push_back(toWString(extraArg).c_str());
     }
@@ -207,7 +203,6 @@ bool CompileHLSLtoSPV(const std::string &input,
         return false;
     }
 
-    // 同时输出反射信息（如果请求）
     if (options.outputReflection) {
         IDxcBlob* pReflection = nullptr;
         if (SUCCEEDED(pResults->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(&pReflection), nullptr))) {
@@ -280,7 +275,7 @@ bool CompileHLSLtoSPV(const std::string &input,
     return true;
 }
 
-// 向后兼容的版本
+
 bool CompileHLSLtoSPV(const std::string &input,
                       const std::string &target,
                       const std::string &entry,
@@ -312,7 +307,6 @@ int main(int argc, char **argv) {
     CompileOptions options;
     options.forceShaderModel67 = true; // 默认强制使用 6.7
     
-    // 解析额外参数
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-O0") options.optimizationLevel = 0;

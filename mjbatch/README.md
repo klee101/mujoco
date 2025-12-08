@@ -1,3 +1,27 @@
+## vulkan 下载
+下载 vulkan 1.4.328.1
+
+配置类似的 ~/.bashrc
+```bash
+export VULKAN_SDK=~/vulkan/1.4.328.1/x86_64
+export PATH=$VULKAN_SDK/bin:$PATH
+export LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH
+export VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+export PKG_CONFIG_PATH=$VULKAN_SDK/lib/pkgconfig:$PKG_CONFIG_PATH
+````
+
+## 子模块更新
+
+```bash
+git submodule update --init --recursive
+````
+
+## dxc解压
+.so库需要手动解压
+```bash
+tar zxvf linux_dxc_2025_07_14.x86_64.tar.gz 
+````
+
 ##  benchmark 构建与编译
 
 本项目采用了编译优化选项以确保 benchmark 的性能。
@@ -27,19 +51,15 @@ cmake --build build --config Release --target benchmark_test --parallel
 # 编译 Shader
 cmake --build build --config Release --target CompileShaders --parallel
 ```
-### 3\. 执行 
+### 3\. 执行
 
 在mujoco/build路径下：
 ```bash
 ./bin/benchmark_test
 ```
 
+### 4\. 路径问题
 
-### 4\. 一键运行脚本
+项目中tests/benckmark_test.cc中使用的mjcf model是使用robosuite生成的xml，带有绝对路径来索引.stl和纹理图片等等。因此正常运行暂时需要手动提取robosuite的运行时xml。
 
-为了简化流程，可以直接运行提供的 Python 脚本，它会直接执行上面的流程并且把程序输出的PPM文件转化为可视的png图像（需要下载图像转换对应的库）
-
-```bash
-python run_benchmark.py
-```
 

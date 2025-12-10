@@ -64,5 +64,18 @@ foreach(HLSL_FILE ${HLSL_FILES})
     list(APPEND SPV_FILES ${OUTPUT_SPV})
 endforeach()
 
-# 创建一个目标来编译所有 shaders
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
+
+# feat: shader_compiler for reflection
+add_library(shader_compiler SHARED
+    reflection.h
+    shader_compiler.h shader_compiler.cpp
+)
+target_include_directories(shader_compiler PRIVATE ${DXC_INCLUDE})
+
+target_link_libraries(shader_compiler PRIVATE
+    ${DXC_LIB}/libdxcompiler.so
+    spv_reflect
+)
+
+target_compile_features(shader_compiler PUBLIC cxx_std_20)

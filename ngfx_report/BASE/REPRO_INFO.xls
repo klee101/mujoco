@@ -1,0 +1,32 @@
+Computer Name	tmac-PC
+Operating System	Linux (Ubuntu 24.04.2 LTS)
+Operating System Build	#24~24.04.3-Ubuntu SMP PREEMPT_DYNAMIC Mon Jul  7 16:39:17 UTC 2
+Processor	12th Gen Intel(R) Core(TM) i7-12700K
+RAM Usage	30325 MiB / 31833 MiB (95.3%)
+Device Name	NVIDIA GeForce RTX 5090
+Chip Name	GB202
+Driver Version	570.172.08
+Product Version	2025.4.1.0 (build 36508989) (public-release)
+Process File Name	/home/hpf/project/vulkan/mujoco/mujoco/build/bin/benchmark_test
+Command Line	/home/hpf/project/vulkan/mujoco/mujoco/build/bin/benchmark_test
+API	Vulkan
+Troubleshooting Collection Controls	API Timestamps, metrics, sampling oldest, instrumented, FECS, warp state sampling control=8
+Start After	0 Submits
+Max Duration 	1000 ms
+Limited To	100 Submits
+Allocated Event Buffer Memory (kB)	10000
+Allocated Timestamps	100000
+V-Sync Mode	Enforced Off
+GPU Clocks	Locked to Base
+Force Repaint	No
+Collect Screenshot	Yes
+Time Every Action	No
+Trace Shader Bindings	Yes
+Collect Shader Pipelines	Yes
+Warp State Sampling Interval	8192
+Enable NVTX Ranges	Yes
+Recompile Cached Vulkan Shader Modules	Yes
+Enable Hardware Events	No
+Metric Set	Top-Level Triage
+Real-Time Shader Profiler	Enabled
+Multi-Pass Metrics	Disabled

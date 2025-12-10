@@ -1,3 +1,6 @@
 [submodule "external/madrona"]
 	path = external/madrona
 	url = https://github.com/shacklettbp/madrona.git
+[submodule "external/glm"]
+	path = external/glm
+	url = https://github.com/g-truc/glm.git

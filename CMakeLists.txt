@@ -308,6 +308,8 @@ if(NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
   )
 endif()
 
-add_subdirectory(external/bps3D EXCLUDE_FROM_ALL)
+add_subdirectory(external/madrona EXCLUDE_FROM_ALL)
+
+add_subdirectory(external/glm EXCLUDE_FROM_ALL)
 
 add_subdirectory(mjbatch)

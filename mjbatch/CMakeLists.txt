@@ -138,6 +138,7 @@ add_library(renderer STATIC
   utils.h              
   vkutils.h            vkutils.cc           vkutils.inl
   memcpy_avx.h
+  pipeline_shaders.h  pipeline_shaders.cc
 )
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_include_directories(renderer PUBLIC
@@ -151,6 +152,7 @@ target_link_libraries(renderer PUBLIC
   Threads::Threads
   Vulkan::Vulkan
   glm
+  shader_compiler
 )
 
 add_dependencies(renderer generate_dispatch)

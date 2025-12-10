@@ -1,3 +1,3 @@
-[submodule "external/bps3D"]
-	path = external/bps3D
-	url = https://ghfast.top/https://github.com/shacklettbp/bps3D.git
+[submodule "external/madrona"]
+	path = external/madrona
+	url = https://github.com/shacklettbp/madrona.git

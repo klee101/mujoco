@@ -23,6 +23,7 @@
 #include "render_context.h"
 #include "memory.h"
 #include "scene.h"
+#include "shared_protocol.h"
 
 #include <nvtx3/nvToolsExt.h> 
 
@@ -225,12 +226,13 @@ struct LoadedTextureResources {
 struct PushConstants {
     glm::mat4 model;          // 64 bytes
     glm::vec4 rgba;           // 16 bytes
-    glm::vec3 specular;       // 12 bytes
+    float specular;           // 4 bytes
     float emission;           // 4 bytes
     float shininess;          // 4 bytes
     float reflectance;        // 4 bytes
     int texture_index;          // 原 texture_id (表示在对应数组中的下标)
     int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
+    int pad[2];               // Padding to 16 bytes
 };
 
 struct MeshEntry {
@@ -268,6 +270,11 @@ public:
     // Core Rendering Interface
     RenderResult Render(mjData** data_array, const int* camera_ids = nullptr);
 
+    // [ADD] Shared Memory Interface (New)
+    bool UpdateScenesFromMemory(const uint8_t* ptr, int batch_idx, int max_geom, int max_light);
+    RenderResult RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light);
+    bool RecordCommandBuffersFromMemory(const uint8_t* ptr, int count);
+
     const std::vector<unsigned char>& GetRGBBuffer() const { return rgb_buffer_; }
     const std::vector<float>& GetDepthBuffer() const { return depth_buffer_; }
 
@@ -275,6 +282,8 @@ public:
     const float* GetDepthFrame(int batch_idx) const;
 
     const RenderStats& GetLastStats() const { return last_stats_; }
+
+    const BatchRendererConfig& GetConfig() const { return config_; }
 
     bool IsValid() const { return initialized_; }
 
@@ -286,6 +295,7 @@ private:
 
     // Rendering stages
     bool UpdateScenes(mjData** data_array, int count);
+
     bool RecordCommandBuffers(int count);
     bool SubmitAndWait();
     bool ReadbackResults();

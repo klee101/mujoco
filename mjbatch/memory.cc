@@ -591,6 +591,12 @@ HostBuffer MemoryAllocator::makeStagingBuffer(VkDeviceSize num_bytes,
     return makeHostBuffer(num_bytes, BufferFlags::stageUsage, dev_addr);
 }
 
+HostBuffer MemoryAllocator::makeStagingBuffer2(VkDeviceSize num_bytes,
+                                              bool dev_addr)
+{
+    return makeHostBuffer(num_bytes, BufferFlags::stageUsage | BufferFlags::commonUsage, dev_addr);
+}
+
 HostBuffer MemoryAllocator::makeParamBuffer(VkDeviceSize num_bytes,
                                             bool dev_addr)
 {

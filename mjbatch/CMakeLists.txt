@@ -106,8 +106,12 @@ add_custom_command(
 )
 
 if(NOT Python_EXECUTABLE)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    # 修改：增加 Development 组件
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
     set(Python_EXECUTABLE ${Python3_EXECUTABLE})
+else()
+    # 即使 Python_EXECUTABLE 已经定义（比如从父工程传入），我们也需要 Development 组件
+    find_package(Python3 REQUIRED COMPONENTS Development) 
 endif()
 
 add_custom_command(
@@ -173,4 +177,39 @@ target_link_libraries(
     benchmark_test
     renderer
 )
+
+# ==============================================================================
+# 2. 独立引入 Pybind11 (最小修改量，使用标准 FetchContent)
+# ==============================================================================
+if(NOT TARGET pybind11::module)
+    include(FetchContent)
+    FetchContent_Declare(
+        pybind11
+        GIT_REPOSITORY https://github.com/pybind/pybind11
+        GIT_TAG        v2.11.1 # 使用一个稳定版本
+    )
+    FetchContent_MakeAvailable(pybind11)
+endif()
+
+# ==============================================================================
+# 3. 编译 Shared Memory 测试扩展
+# ==============================================================================
+# 使用 pybind11 标准命令，替代 mujoco_pybind11_module 宏
+pybind11_add_module(test_shm_ext tests/test_shm_binding.cc)
+
+# 设置编译选项 (复用你之前定义的 AVX 和 EXTRA 选项)
+target_compile_options(test_shm_ext PRIVATE ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
+
+target_link_libraries(test_shm_ext PRIVATE renderer mujoco::mujoco)
+
+set_target_properties(test_shm_ext PROPERTIES PREFIX "" SUFFIX ".so")
+
+# 使用 pybind11 标准命令，替代 mujoco_pybind11_module 宏
+pybind11_add_module(mjb bindings.cc)
+
+target_compile_options(mjb PRIVATE ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
+
+target_link_libraries(mjb PRIVATE renderer mujoco::mujoco)
+
+set_target_properties(mjb PROPERTIES PREFIX "" SUFFIX ".so")
 

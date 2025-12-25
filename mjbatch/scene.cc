@@ -68,7 +68,7 @@ Scene::Scene(const mjModel* model, const mjvScene* scene)
 Scene::~Scene() = default;
 
 // Optimized Update - only updates transforms
-void Scene::Update(const mjModel* model, const mjvScene* scene, const mjData* data) {
+void Scene::Update(const mjModel* model, const mjvScene* scene) {
     model_ = model;
     
     // Only update transforms for existing geometries
@@ -190,7 +190,6 @@ void Scene::UpdateCameraFromSimulation(const mjModel* m, const mjData* d, int ca
 
     // 1. Basic Info
     camera_info_.id = cam_id;
-    // 获取名称 (MuJoCo name string array logic)
     if (m->names) {
         camera_info_.name = std::string(&m->names[m->name_camadr[cam_id]]);
     }
@@ -262,11 +261,6 @@ void Scene::UpdateCameraFromSimulation(const mjModel* m, const mjData* d, int ca
     // GLM is designed for OpenGL. We need to flip the Y axis in the projection matrix.
     camera_info_.proj_matrix[1][1] *= -1.0f;
 
-    // Optional: If you use standard GLM perspective, it maps Z to [-1, 1].
-    // Ideally for Vulkan you want [0, 1]. 
-    // You can usually fix this in the pipeline creation (minDepth/maxDepth) 
-    // or by pre-multiplying a correction matrix, but generally [1][1] *= -1 is the most critical fix.
-
     // Combined
     camera_info_.view_proj_matrix = camera_info_.proj_matrix * camera_info_.view_matrix;
 }
@@ -292,13 +286,8 @@ Material mat;
     mat.emission = geom->emission;
     mat.shininess = geom->shininess;
     mat.reflectance = geom->reflectance;
-    float specular_val = geom->specular;
-    mat.specular = float3(specular_val, specular_val, specular_val);
+    mat.specular = geom->specular;
     
-    // A. 排除装饰物 (mjCAT_DECOR)
-    // Decor 通常是接触点、力箭头等，它们在 model->geom_group 中没有对应数据
-    // B. 确认对象类型是 mjOBJ_GEOM
-    // 只有 mjOBJ_GEOM 类型的 objid 才对应 model->geom_xxx 数组
     bool is_model_geometry = (geom->category != mjCAT_DECOR) && 
                              (geom->objtype == mjOBJ_GEOM);
 
@@ -307,9 +296,6 @@ Material mat;
         // 安全地获取 Group ID
         int group_id = model->geom_group[geom->objid];
 
-        // printf("Geom ID %d has Group ID %d\n", geom->objid, group_id);
-        // 逻辑：Group 0 是碰撞体，将其设为完全透明 (Alpha = 0)
-        // 渲染器后续可以根据 Alpha=0 剔除此物体
         if (group_id == 0) {
             mat.rgba.a = 0.0f;
             // printf("Hiding Collision Geom: objid %d\n", geom->objid);

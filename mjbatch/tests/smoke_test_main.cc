@@ -4,103 +4,102 @@
 #include <cstdlib>
 #include <fstream>
 #include <vector>
-#include <thread>
-#include <chrono>
-#include <string>
-#include <cstring> // 必须包含，用于 memcpy
+#include <cstring> 
 
-#include <vector> // 确保包含 vector
+// [RenderDoc] 1. 头文件
+#include <dlfcn.h> 
+#include "renderdoc_app.h" 
 
-// 输入: rgba_data (指向 RGBA 数据，每像素4字节)
-// 输出: 标准 PPM 文件 (每像素3字节，丢弃 Alpha)
+RENDERDOC_API_1_1_2 *rdoc_api = NULL;
+
+// ... (write_ppm 函数保持不变) ...
 static bool write_ppm(const std::string& path, const unsigned char* rgba_data, int w, int h) {
     std::ofstream ofs(path, std::ios::binary);
     if (!ofs) return false;
-
-    // 1. 写入 P6 头 (P6 代表二进制 RGB)
     ofs << "P6\n" << w << " " << h << "\n255\n";
-
-    // 2. 创建一行 RGB 数据的缓存 (减少磁盘 I/O 次数)
     std::vector<unsigned char> row_buffer(w * 3);
-
-    // 3. 逐行转换并写入
     for (int y = 0; y < h; ++y) {
-        const unsigned char* src_row = rgba_data + (size_t)y * w * 4; // 源指针 (RGBA)
-        unsigned char* dst_row = row_buffer.data();                   // 目标指针 (RGB)
-
+        const unsigned char* src_row = rgba_data + (size_t)y * w * 4;
+        unsigned char* dst_row = row_buffer.data();
         for (int x = 0; x < w; ++x) {
-            dst_row[x * 3 + 0] = src_row[x * 4 + 0]; // R
-            dst_row[x * 3 + 1] = src_row[x * 4 + 1]; // G
-            dst_row[x * 3 + 2] = src_row[x * 4 + 2]; // B
-            // src_row[x * 4 + 3] (Alpha) 被忽略
+            dst_row[x * 3 + 0] = src_row[x * 4 + 0];
+            dst_row[x * 3 + 1] = src_row[x * 4 + 1];
+            dst_row[x * 3 + 2] = src_row[x * 4 + 2];
         }
-
-        // 将这一行 RGB 数据写入文件
         ofs.write(reinterpret_cast<const char*>(row_buffer.data()), w * 3);
     }
-
     return ofs.good();
 }
 
 int main() {
-  // ---- 1) Load the model ----
-  const std::string xml_nut = "./model/lnuts.xml";
-  const std::string xml_lift = "./model/lift.xml";
-
-  char error[1024] = {0};
-
-  mjModel* m1 = mj_loadXML(xml_nut.c_str(), nullptr, error, sizeof(error));
-  if (!m1) {
-    std::fprintf(stderr, "[Error] mj_loadXML failed for nuts: %s\n", error);
-    return 3;
-  }
-
-  mjModel* m2 = mj_loadXML(xml_lift.c_str(), nullptr, error, sizeof(error));
-  if (!m2) {
-    std::fprintf(stderr, "[Error] mj_loadXML failed for lift: %s\n", error);
-    mj_deleteModel(m1);
-    return 3;
-  }
-
-  std::vector<mjModel*> models;
-  models.push_back(m1);
-  models.push_back(m2);
-
-  BatchRendererConfig cfg;
-  cfg.batch_size = 2;          
-  cfg.frame_width = 1920;
-  cfg.frame_height = 1080;
-  cfg.enable_depth = true;
-  cfg.enable_validation = false;
-
-  auto renderer = BatchRenderer::Create(models, cfg);
-  if (!renderer || !renderer->IsValid()) {
-    std::fprintf(stderr, "[Error] BatchRenderer::Create failed\n");
-    mj_deleteModel(m1);
-    mj_deleteModel(m2);
-    return 4;
-  }
-
-  // ---- 2) create mjData ----
-  std::vector<mjData*> datas(cfg.batch_size, nullptr);
-  for (int i = 0; i < cfg.batch_size; ++i) {
-    datas[i] = mj_makeData(models[i]);
-    mj_forward(models[i], datas[i]);
-  }
-
-  // physics step
-  for(int step=0; step<100; step++) {
-    for (int i = 0; i < cfg.batch_size; ++i) {
-      mj_step(models[i], datas[i]);
+    // [RenderDoc] 2. 加载 RenderDoc 库
+    void *mod = dlopen("librenderdoc.so", RTLD_NOW | RTLD_NOLOAD);
+    if (!mod) {
+        mod = dlopen("librenderdoc.so", RTLD_NOW);
     }
-  }
+    
+    if (mod) {
+        pRENDERDOC_GetAPI RENDERDOC_GetAPI = (pRENDERDOC_GetAPI)dlsym(mod, "RENDERDOC_GetAPI");
+        int ret = RENDERDOC_GetAPI(eRENDERDOC_API_Version_1_1_2, (void **)&rdoc_api);
+        
+        if (ret == 1) {
+            printf("[RenderDoc] API loaded.\n");
+            
+            // [关键修改] 设置捕获文件保存路径模板
+            // 不需要加后缀，RenderDoc 会自动变为 mujoco_capture_frame1.rdc
+            rdoc_api->SetCaptureFilePathTemplate("mujoco_capture");
+            
+            // 开启所有资源的引用（防止资源未被保存）
+            rdoc_api->SetCaptureOptionU32(eRENDERDOC_Option_RefAllResources, 1);
+            rdoc_api->SetCaptureOptionU32(eRENDERDOC_Option_CaptureCallstacks, 1);
+        }
+    } else {
+        printf("[RenderDoc] librenderdoc.so NOT loaded. check LD_LIBRARY_PATH.\n");
+    }
 
-  // ---- 3) Render ----
-  auto result = renderer->Render(datas.data(), nullptr);
-  if (!result) {
-    std::fprintf(stderr, "[Error] Render failed: %s\n", result.message.c_str());
-    return 6;
-  }
+    // ---- Load Models (保持不变) ----
+    const std::string xml_nut = "./model/lnuts.xml";
+    const std::string xml_lift = "./model/lift.xml";
+    char error[1024] = {0};
+
+    mjModel* m1 = mj_loadXML(xml_nut.c_str(), nullptr, error, sizeof(error));
+    if (!m1) return 3;
+    mjModel* m2 = mj_loadXML(xml_lift.c_str(), nullptr, error, sizeof(error));
+    if (!m2) return 3;
+
+    std::vector<mjModel*> models = {m1, m2};
+    BatchRendererConfig cfg;
+    cfg.batch_size = 2;          
+    cfg.frame_width = 1920;
+    cfg.frame_height = 1080;
+    cfg.enable_depth = true;
+    cfg.enable_validation = false; // 抓帧时建议关闭 Validation Layer 避免干扰
+
+    auto renderer = BatchRenderer::Create(models, cfg);
+    if (!renderer) return 4;
+
+    std::vector<mjData*> datas(cfg.batch_size, nullptr);
+    for (int i = 0; i < cfg.batch_size; ++i) {
+        datas[i] = mj_makeData(models[i]);
+        mj_forward(models[i], datas[i]);
+    }
+
+    for(int step=0; step<100; step++) {
+        for (int i = 0; i < cfg.batch_size; ++i) mj_step(models[i], datas[i]);
+    }
+
+    // ---- [RenderDoc] 3. 触发捕获 ----
+    if (rdoc_api) {
+        printf("[RenderDoc] Starting Capture...\n");
+        rdoc_api->StartFrameCapture(NULL, NULL); 
+    }
+
+    auto result = renderer->Render(datas.data(), nullptr);
+
+    if (rdoc_api) {
+        rdoc_api->EndFrameCapture(NULL, NULL); 
+        printf("[RenderDoc] Capture Saved: ./mujoco_capture_frame1.rdc\n");
+    }
 
   // ---- 4) merge two images ----
   const unsigned char* img0 = renderer->GetRGBFrame(0); // lnuts

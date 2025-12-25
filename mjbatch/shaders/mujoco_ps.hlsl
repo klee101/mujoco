@@ -5,21 +5,12 @@
 cbuffer CameraData : register(b0, space0) {
     float4x4 view_proj;
     float3 camera_position;
-    float _pad1;
-    float3 camera_forward;
-    float _pad2;
-    float3 camera_up;
-    float _pad3;
-    float near_plane;
-    float far_plane;
-    float fov;
-    float _pad4;
+    float padding; // Padding to align to 16 bytes
 };
 
 struct LightInfo {
-    // Offset 0: position and type (padding to float4)
     float3 position; 
-    uint32_t type; // 0: spot, 1: directional, 2: point
+    uint type; // 0: spot, 1: directional, 2: point
 
     float3 direction;
     float range;
@@ -34,40 +25,40 @@ struct LightInfo {
     float bulbRadius;
     
     float3 attenuation; // x: constant, y: linear, z: quadratic
-    float intensity;    // NOTE: This will be read but is noted as unused for intensity scaling.
+    float intensity;    
 
-    uint32_t castShadow;
+    uint castShadow;
     float padding[3]; 
 };
 
+// Even if we don't use the input data, we MUST keep the definition
+// so the C++ Descriptor Set binding doesn't crash.
 cbuffer LightData : register(b1, space0) {
-    LightInfo lights[10];
-    uint32_t lightCount;
+    LightInfo input_lights[10];
+    uint input_lightCount;
     float pad[3];
 };
 
 struct PushConstants {
     float4x4 model;
     float4 material_rgba;
-    float3 material_specular;
+    float material_specular;
     float material_emission;
     float material_shininess;
     float material_reflectance;
     
-    int texture_index; // 在对应数组(2D或Cube)中的索引
+    int texture_index;
     int texture_type;  // -1: Unlit/Color, 0: 2D Texture, 1: Cube Texture
+    int padding[2];
 };
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pushConst;
 
 // ============================================================================
-// TEXTURE RESOURCES (BINDING = 2 used for descriptor set 1, assuming space1)
+// TEXTURE RESOURCES (Bindless)
 // ============================================================================
-
-// Binding 0: 2D Texture Array
 Texture2D g_textures[] : register(t0, space1);
-// Binding 2: Sampler
 SamplerState g_sampler : register(s1, space1);
 
 struct PSInput {
@@ -83,19 +74,21 @@ struct PSInput {
 // ============================================================================
 // DEBUG MODES
 // ============================================================================
-// 0: Off
-// 1: Normals (World Space)
-// 2: Reflectance Heatmap (Blue=Low, Red=High)
-// 3: Diffuse Only (White Material)
+// 0: Off (Final Render)
+// 1: Normals
+// 2: Reflectance Heatmap
+// 3: Lighting Only (White Material)
 // 4: Specular Only
-// 5: Lighting Complexity (Heatmap of light count)
-
+// 5: UV Coords
 
 #ifndef DEBUG_VIEW
   #define DEBUG_VIEW 0
 #endif
 
-// Helper for debug colors
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
 static float3 HeatMap(float t) {
     float3 cold = float3(0, 0, 1);
     float3 mid = float3(0, 1, 0);
@@ -103,9 +96,6 @@ static float3 HeatMap(float t) {
     return t < 0.5 ? lerp(cold, mid, t * 2.0) : lerp(mid, hot, (t - 0.5) * 2.0);
 }
 
-// ============================================================================
-// ACES TONE MAPPING (更美观的电影级色调)
-// ============================================================================
 float3 ACESToneMapping(float3 color) {
     const float A = 2.51f;
     const float B = 0.03f;
@@ -115,31 +105,25 @@ float3 ACESToneMapping(float3 color) {
     return saturate((color * (A * color + B)) / (color * (C * color + D) + E));
 }
 
-// ============================================================================
-// [NEW] CUBE MAP PROJECTION HELPER
-// ============================================================================
-// 手动计算 CubeMap 投影。
+// Manually calculate Cube Map UVs for 2D Texture Arrays
 float2 CalculateCubeUV(float3 v) {
     float3 vAbs = abs(v);
-    float ma; // Major Axis Magnitude
+    float ma;
     float2 uv;
     
     if(vAbs.z >= vAbs.x && vAbs.z >= vAbs.y) {
-        // Front / Back Face
         ma = vAbs.z;
         uv = float2(v.x, -v.y); 
     } else if(vAbs.y >= vAbs.x) {
-        // Top / Bottom Face
         ma = vAbs.y;
         uv = float2(v.x, v.z);
     } else {
-        // Left / Right Face
         ma = vAbs.x;
         uv = float2(v.z, -v.y);
     }
-
     return (uv / ma) * 0.5 + 0.5;
 }
+
 // ============================================================================
 // LIGHTING CALCULATION
 // ============================================================================
@@ -149,169 +133,184 @@ void CalculateLightContribution(
     float3 N,           // Normal
     float3 V,           // View Dir
     float3 matDiffuse,  // Base Color
-    float3 matSpecular, // Specular Color
+    float matSpecular, // Specular Color
     float matShininess, // Shininess
-    float matReflectance, // [New] Reflectance factor
+    float matReflectance, 
     inout float3 outDiffuse,
     inout float3 outSpecular,
     inout float3 outAmbient
 ) {
-    // 1. 计算光照向量 L 和 衰减 Attenuation
     float3 L;
     float attenuation = 1.0;
 
+    // --- Light Vector Setup ---
     if (light.type == 1) { // Directional
         L = normalize(-light.direction);
-        // Directional lights usually don't have distance attenuation in standard pipelines
-        attenuation = 1.0; 
-    } else { // Point (2) or Spot (0)
+    } else { // Point or Spot
         float3 lightVec = light.position - worldPos;
         float d = length(lightVec);
-        L = lightVec / d;
+        L = lightVec / max(d, 0.0001);
         
-        // 避免除零
         float denom = light.attenuation.x + light.attenuation.y * d + light.attenuation.z * d * d;
-        if (denom < 0.0001) denom = 1.0;
-        attenuation = 1.0 / denom;
+        attenuation = 1.0 / max(denom, 0.0001);
 
-        // Spot Light Cutoff
-        if (light.type == 0) {
+        if (light.type == 0) { // Spot Cutoff
             float theta = dot(-L, normalize(light.direction));
             float outerCutoff = cos(radians(light.cutoff));
-            float epsilon = 0.1; // Soft edge
+            float epsilon = 0.1;
             float spotIntensity = smoothstep(outerCutoff, outerCutoff + epsilon, theta);
             attenuation *= pow(spotIntensity, light.exponent);
         }
     }
 
-    if (attenuation < 0.001) return;
+    if (attenuation < 0.0001) return;
 
-    // 2. Diffuse (Lambert)
+    // --- Diffuse ---
     float NdotL = max(dot(N, L), 0.0);
-    float3 lightDiffuse = light.diffuse * attenuation;
-    outDiffuse += lightDiffuse * matDiffuse * NdotL;
+    outDiffuse += light.diffuse * matDiffuse * NdotL * attenuation;
 
-    // 3. Ambient
-    // Ambient usually isn't attenuated by distance/angle in simple models, 
-    // but here we simply add it weighted by material color.
+    // --- Ambient ---
     outAmbient += light.ambient * matDiffuse;
 
-    // 4. Specular (Blinn-Phong with Fresnel-ish Reflectance)
+    // --- Specular (Schlick Fresnel + Blinn-Phong) ---
     if (NdotL > 0.0) {
         float3 H = normalize(L + V);
         float NdotH = max(dot(N, H), 0.0);
-        
-        // [Reflectance Logic]
-        // 使用 Reflectance 来调制高光强度。
-        // 添加简单的 Fresnel 近似：视线越平行于表面，反射越强 (Schlick approximation idea)
-        // F = R + (1-R) * (1 - dot(H,V))^5
-        float baseF = matReflectance; 
-        float fresnel = baseF + (1.0 - baseF) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
-        
+        float HdotV = max(dot(H, V), 0.0);
+
+        // Fresnel (scalar)
+        float baseF   = matReflectance; 
+        float fresnel = baseF + (1.0 - baseF) * pow(1.0 - HdotV, 5.0);
+
         float specPower = pow(NdotH, matShininess);
+
+        // matSpecular 
+        float specIntensity = matSpecular * specPower * fresnel * attenuation;
         
-        // 最终高光 = 光源高光色 * 材质高光色 * 几何衰减 * 高光指数 * (反射率/Fresnel系数)
-        float3 lightSpecular = light.specular * attenuation;
-        outSpecular += lightSpecular * matSpecular * specPower * fresnel;
-    }
+        outSpecular += light.specular * specIntensity;
+}
+
 }
 
 // ============================================================================
-// MAIN SHADER
+// PIXEL SHADER MAIN
 // ============================================================================
 float4 PSMain(PSInput input) : SV_Target {
-    // 1. Prepare Vectors
+    // 1. Prepare Geometry Vectors
     float3 N = normalize(input.normal);
     float3 V = normalize(input.view_dir);
-    // Double sided lighting fix (optional): if normal points away from camera, flip it
+    // Optional: Double-sided fix
     // if (dot(N, V) < 0) N = -N; 
 
-    // 2. Sample Texture / Base Color
+    // 2. Prepare Material Color (Base Color * Texture)
     float4 base_color = pushConst.material_rgba * input.color;
     
-    // Texture Logic
+    // Texture Logic (NonUniformResourceIndex handles bindless arrays safely)
     if (pushConst.texture_index >= 0) {
-        if (pushConst.texture_type == 0) {
-            // [CASE 0] Standard 2D Texture
-            float4 tex = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
-            base_color *= tex;
+        float4 texColor = float4(1,1,1,1);
+        
+        if (pushConst.texture_type == 0) { 
+            // 2D Texture
+            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, input.texcoord);
         } 
-        else if (pushConst.texture_type == 1) {
-            // [CASE 1] Simulated Cube Texture (using 2D array)
-            // 原逻辑: g_cube_textures[...].Sample(..., uvw);
-            // 新逻辑: 手动计算投影 UV -> 采样 2D 数组
-            
-            float3 uvw = normalize(input.sample_vec); // 或者是 input.world_pos - camera_pos，取决于你的顶点着色器传参
-            
-            // [+] 调用手动计算函数
+        else if (pushConst.texture_type == 1) { 
+            // Simulated Cube Map
+            float3 uvw = normalize(input.sample_vec);
             float2 cube_uv = CalculateCubeUV(uvw);
-            
-            // [+] 使用计算出的 UV 采样 2D 纹理数组
-            // 注意：texture_index 现在指向的是 stored in textures_2d 的那个"原本是cube"的纹理
-            float4 tex = g_textures[pushConst.texture_index].Sample(g_sampler, cube_uv);
-            
-            base_color *= tex;
+            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, cube_uv);
         }
+        
+        base_color *= texColor;
     }
 
-    // Unlit Logic check (if texture_type is -1 and emission is super high, maybe unlit?)
-    // For now, we assume standard lighting path unless explicit unlit flag exists.
-
-    // 3. Prepare Accumulators
+    // 3. Prepare Lighting Accumulators
     float3 totalDiffuse = float3(0, 0, 0);
     float3 totalSpecular = float3(0, 0, 0);
     float3 totalAmbient = float3(0, 0, 0);
 
-    // 4. Lighting Loop
-    for (uint32_t i = 0; i < lightCount; ++i) {
-        CalculateLightContribution(
-            lights[i], 
-            input.world_pos, 
-            N, V, 
-            base_color.rgb, 
-            pushConst.material_specular, 
-            pushConst.material_shininess,
-            pushConst.material_reflectance, // Pass reflectance
-            totalDiffuse,   // ref out
-            totalSpecular,  // ref out
-            totalAmbient    // ref out
-        );
-    }
+    // ========================================================================
+    // [LOGIC] DEFAULT STUDIO LIGHTING SETUP
+    // Ignores input_lights[] from UBO entirely.
+    // ========================================================================
+    
+    // Light 1: Key Light (Warm Sun from Top-Right)
+    LightInfo keyLight;
+    keyLight.type = 1; // Directional
+    keyLight.direction = normalize(float3(-1.0, -2.0, -1.0)); // Coming from Top-Right-Front
+    keyLight.diffuse = float3(1.0, 0.95, 0.9); // Warm Light
+    keyLight.specular = float3(1.0, 1.0, 1.0);
+    keyLight.ambient = float3(0.05, 0.05, 0.08); // Slight blue ambient
+    keyLight.attenuation = float3(1,0,0); // Unused for Directional
+    keyLight.position = float3(0,0,0);
+    keyLight.range = 0;
+    keyLight.cutoff = 0;
+    keyLight.exponent = 0;
+    keyLight.bulbRadius = 0;
+    keyLight.intensity = 1.0;
+    keyLight.castShadow = 0;
 
-    // 5. Combine Components
+    CalculateLightContribution(
+        keyLight, input.world_pos, N, V, 
+        base_color.rgb, 
+        pushConst.material_specular, 
+        pushConst.material_shininess, 
+        pushConst.material_reflectance,
+        totalDiffuse, totalSpecular, totalAmbient
+    );
+
+    // Light 2: Fill Light (Headlight / Camera Light)
+    // Ensures nothing is ever pitch black by lighting from the view direction
+    LightInfo fillLight;
+    fillLight.type = 1; // Directional
+    fillLight.direction = -V; // Parallel to View Direction (Headlight)
+    fillLight.diffuse = float3(0.3, 0.3, 0.35); // Cool, dimmer light
+    fillLight.specular = float3(0.2, 0.2, 0.2);
+    fillLight.ambient = float3(0.0, 0.0, 0.0); // Ambient handled by Key Light
+    fillLight.attenuation = float3(1,0,0);
+    // Fill dummy values for struct
+    fillLight.position = float3(0,0,0);
+    fillLight.range = 0; fillLight.cutoff = 0; fillLight.exponent = 0;
+    fillLight.bulbRadius = 0; fillLight.intensity = 1.0; fillLight.castShadow = 0;
+
+    CalculateLightContribution(
+        fillLight, input.world_pos, N, V, 
+        base_color.rgb, 
+        pushConst.material_specular, 
+        pushConst.material_shininess, 
+        pushConst.material_reflectance,
+        totalDiffuse, totalSpecular, totalAmbient
+    );
+
+    // 4. Combine Lighting
     float3 final_color = totalAmbient + totalDiffuse + totalSpecular;
     
     // Add Emission
     final_color += base_color.rgb * pushConst.material_emission;
 
     // ========================================================================
-    // DEBUG VIEWS (Use these to check your data)
+    // DEBUG VIEWS
     // ========================================================================
     #if DEBUG_VIEW == 1
-        // View Normals (Remapped -1..1 to 0..1)
-        return float4(N * 0.5 + 0.5, 1.0);
+        return float4(N * 0.5 + 0.5, 1.0); // Normals
     #elif DEBUG_VIEW == 2
-        // View Reflectance Heatmap
-        return float4(HeatMap(pushConst.material_reflectance), 1.0);
+        return float4(HeatMap(pushConst.material_reflectance), 1.0); // Reflectance
     #elif DEBUG_VIEW == 3
-        // View Diffuse Lighting Only (No Texture, White Base)
-        return float4(totalDiffuse / (max(base_color.rgb, 0.001)), 1.0); 
+        // Diffuse Lighting Only (Grey Clay Mode)
+        return float4(totalDiffuse + totalAmbient, 1.0);
     #elif DEBUG_VIEW == 4
-        // View Specular Only
-        return float4(totalSpecular, 1.0);
+        return float4(totalSpecular, 1.0); // Specular Only
     #elif DEBUG_VIEW == 5
-        // View Linear Final Color (Before Tone Mapping)
-        return float4(final_color, 1.0);
+        return float4(input.texcoord, 0.0, 1.0); // UVs
     #endif
 
     // ========================================================================
     // POST PROCESSING
     // ========================================================================
     
-    // ACES Tone Mapping (More filmic than simple Reinhard)
+    // Tone Mapping
     final_color = ACESToneMapping(final_color);
-
-    // Gamma Correction (Linear -> sRGB)
+    
+    // Gamma Correction
     final_color = pow(final_color, 1.0 / 2.2);
 
     return float4(final_color, base_color.a);

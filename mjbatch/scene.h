@@ -21,13 +21,13 @@ using mat4 = glm::mat4;
 // Material properties for rendering
 struct Material {
     float4 rgba;           // Base color (RGBA)
-    float3 specular;       // Specular color
+    float specular;       // Specular color
     float shininess;       // Shininess factor
     float emission;        // Emission factor
     float reflectance;     // Reflectance factor
     int texture_id;        // Texture ID (-1 if no texture)
     
-    Material() : rgba(1, 1, 1, 1), specular(0.5f, 0.5f, 0.5f), 
+    Material() : rgba(1, 1, 1, 1), specular(0.5f), 
                  shininess(32.0f), emission(0.0f),reflectance(0.0f), texture_id(-1) {}
 };
 
@@ -60,15 +60,7 @@ struct CameraInfo {
 struct CameraUBO {
     glm::mat4 view_proj;
     glm::vec3 position;
-    float padding1;
-    glm::vec3 forward;
-    float padding2;
-    glm::vec3 up;
-    float padding3;
-    float near_plane;
-    float far_plane;
-    float fov;
-    float padding4;
+    float padding1;  // Padding to align to 16 bytes
 };
 
 struct LightInfo {
@@ -167,7 +159,7 @@ public:
     ~Scene();
 
     // Update scene from MuJoCo data
-    void Update(const mjModel* model, const mjvScene* scene, const mjData* data);
+    void Update(const mjModel* model, const mjvScene* scene);
 
     // Get render-ready data
 // Accessors
@@ -187,24 +179,6 @@ public:
 
         // 2. 向量拷贝并填充 Padding
         ubo.position = camera_info_.position;
-        ubo.padding1 = 0.0f; // 显式清零 padding，方便 RenderDoc 调试
-
-        ubo.forward = camera_info_.forward;
-        ubo.padding2 = 0.0f;
-
-        ubo.up = camera_info_.up;
-        ubo.padding3 = 0.0f;
-
-        // 3. 标量拷贝
-        ubo.near_plane = camera_info_.near_plane;
-        ubo.far_plane = camera_info_.far_plane;
-
-        // 注意：Shader 中进行数学计算通常需要 弧度制 (Radians)
-        // 如果你的 Shader 只是显示数值用角度；如果参与光照计算用弧度。
-        // 这里推荐转为弧度传入 Shader。
-        ubo.fov = glm::radians(camera_info_.fov_y_degrees); 
-        
-        ubo.padding4 = 0.0f;
 
         return ubo;
     }

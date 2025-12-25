@@ -1,27 +1,20 @@
 cbuffer CameraData : register(b0, space0) {
     float4x4 view_proj;
     float3 camera_position;
-    float _pad1;
-    float3 camera_forward;
-    float _pad2;
-    float3 camera_up;
-    float _pad3;
-    float near_plane;
-    float far_plane;
-    float fov;
-    float _pad4;
+    float padding0;
 };
 
 struct PushConstants {
     float4x4 model;
     float4 material_rgba;
-    float3 material_specular;
+    float material_specular;
     float material_emission;
     float material_shininess;
     float material_reflectance;
     
-    int texture_index; // 在对应数组(2D或Cube)中的索引
-    int texture_type;  // 0: Unlit/Color, 1: 2D Texture, 2: Cube Texture
+    int texture_index;
+    int texture_type;  // -1: Unlit/Color, 0: 2D Texture, 1: Cube Texture
+    int padding[2];
 };
 
 [[vk::push_constant]]

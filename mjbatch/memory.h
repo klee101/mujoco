@@ -217,6 +217,8 @@ public:
 
     HostBuffer makeStagingBuffer(VkDeviceSize num_bytes,
                                  bool dev_addr = false);
+    HostBuffer makeStagingBuffer2(VkDeviceSize num_bytes,
+                                 bool dev_addr = false);
     HostBuffer makeParamBuffer(VkDeviceSize num_bytes,
                                bool dev_addr = false);
     HostBuffer makeHostBuffer(VkDeviceSize num_bytes, bool dev_addr = false);

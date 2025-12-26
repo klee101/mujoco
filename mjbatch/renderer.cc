@@ -43,6 +43,31 @@ std::string glm_vec3_to_string(const glm::vec3& v) {
     return oss.str();
 }
 
+int ResolveTextureFromMaterial(const mjModel* m, int matid) {
+    if (matid < 0 || matid >= m->nmat) return -1;
+
+    // Iterate through texture roles to find the Diffuse (RGB/RGBA) texture
+    // MuJoCo defines roles: 0=RGB, 1=RGBA, 2=Spectral, 3=Normal...
+    // We strictly look for color textures (RGB or RGBA).
+    for (int role = 0; role < mjNTEXROLE; ++role) {
+        int texid_idx = matid * mjNTEXROLE + role;
+        
+        // Safety check for array bounds
+        if (m->mat_texid && texid_idx < m->nmat * mjNTEXROLE) {
+            int texid = m->mat_texid[texid_idx];
+            
+            // If we found a valid texture ID
+            if (texid >= 0 && texid < m->ntex) {
+                // Priority: RGB (0) or RGBA (1)
+                if (role == mjTEXROLE_RGB || role == mjTEXROLE_RGBA) {
+                    return texid;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 // --------------------------- Factory / ctor ---------------------------------
 std::unique_ptr<BatchRenderer> BatchRenderer::Create(
     std::vector<mjModel*> models,
@@ -158,8 +183,6 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
     std::vector<TextureInfo> tmpTextures_;
     tmpTextures_.reserve(model->ntex);
 
-    printf("[TextureDebug] Extracting %d textures from model...\n", model->ntex);
-
     for (int i = 0; i < model->ntex; ++i) {
         TextureInfo tex_info;
         tex_info.texture_id = i;
@@ -176,15 +199,11 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
             tex_name = "unnamed_tex_" + std::to_string(i);
         }
         tex_info.name = tex_name;
-        // Debug Print 1: Raw Info
-        printf("[TextureDebug] Tex %d '%s': Raw Dim: %dx%d, Ch: %d, Type: %d\n", 
-               i, tex_name.c_str(), tex_info.width, tex_info.height, nchannel, tex_info.type);
 
         if (tex_info.type == mjTEXTURE_CUBE || tex_info.type == mjTEXTURE_SKYBOX) {
             // for those builtin cubemap, transform it to standard 2d and process in shader
             if (tex_info.height == tex_info.width * 6) {
                 tex_info.height = tex_info.height / 6;
-                printf("[TextureDebug]   -> Cubemap detected, adjusting height to %d\n", tex_info.height);
             }
         }
 
@@ -193,13 +212,11 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
         int tex_data_adr = model->tex_adr[i];
         // Safety Check 1: Valid Address
         if (tex_data_adr < 0 || tex_data_adr >= model->ntexdata) {
-            printf("[TextureDebug]   -> SKIPPING: Invalid data address %d\n", tex_data_adr);
             continue;
         }
 
         // Safety Check 2: Zero Dimensions
         if (tex_info.width == 0 || tex_info.height == 0) {
-            printf("[TextureDebug]   -> SKIPPING: Zero dimension detected (%dx%d)\n", tex_info.width, tex_info.height);
             continue;
         }
 
@@ -209,7 +226,6 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
         
         // Safety Check 3: Data Size
         if (data_size == 0) {
-             printf("[TextureDebug]   -> SKIPPING: Calculated data size is 0\n");
              continue;
         }
         tex_info.data.resize(data_size);
@@ -292,8 +308,6 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
             uint32_t height = tx.height;
 
             if (width == 0 || height == 0 || staging_size == 0) {
-                printf("[BatchRenderer] Warning: Skipping empty texture '%s' (W:%d H:%d Size:%lu)\n", 
-                       unique_name.c_str(), width, height, staging_size);
                 
                 // Push a placeholder/invalid mapping to maintain index alignment if needed, 
                 // OR just skip. Skipping usually safer but might shift indices if logic relies on i.
@@ -305,8 +319,6 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
                 continue; 
             }
 
-            printf("[BatchRenderer] Uploading Texture: %s (%dx%d) | Size: %lu bytes\n", 
-                   unique_name.c_str(), width, height, staging_size);
 
             LocalTexture texture;
             TextureRequirements texture_reqs;
@@ -1094,9 +1106,13 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                      // If MuJoCo resizes mesh, apply scale here.
                      // Typically 'geom.size' is BBox, not transform scale for meshes.
                 } else if (geom.type == 0) { // Plane
-                     // Scale x/y by size[0], size[1]
-                     model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], 1.0f));
-                } else if (geom.type == 3) { // Sphere
+                    // Scale x/y by size[0], size[1]
+                    float sx = (geom.size[0] > 0) ? geom.size[0] : 1000.0f;
+                    float sy = (geom.size[1] > 0) ? geom.size[1] : 1000.0f;
+                    model_mat = glm::scale(model_mat, glm::vec3(sx, sy, 1.0f));
+                    
+                     // Z scale 1 for plane
+                } else if (geom.type == 2) { // Sphere
                      model_mat = glm::scale(model_mat, glm::vec3(geom.size[0]));
                 } else {
                      // Box, etc: Full 3D scale
@@ -1112,21 +1128,32 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                 pc.shininess = geom.shininess;
                 pc.reflectance = geom.reflectance;
 
-                // Texture Logic
-                if (geom.matid >= 0 && i < texture_offsets_.size()) {
-                     // Mapping logic similar to previous code
-                     // Assuming simple mapping for now
-                     int global_tex_id = texture_offsets_[i] + geom.matid; 
-                     // Note: We need a valid mapping from geom.matid (Material ID) to Texture ID.
-                     // In pure SHM mode, we might need a lookup table if matid != texid.
-                     // For now, assuming matid implies texid for simplicity.
+                // [MODIFIED] Texture Logic
+                int resolved_tex_id = -1;
+                
+                // 1. Resolve matid -> texid
+                if (geom.matid >= 0) {
+                    resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
+                }
+                // 2. Global Lookup
+                if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
+                     int global_tex_id = texture_offsets_[i] + resolved_tex_id;
                      
                      if (global_tex_id < material_textures_.global_texture_lookup.size()) {
                         const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                        pc.texture_type = tex_map.type;
-                        pc.texture_index = tex_map.index_in_array;
+                        
+                        // Valid texture found?
+                        if (tex_map.index_in_array >= 0) {
+                            pc.texture_type = tex_map.type;
+                            pc.texture_index = tex_map.index_in_array;
+                        } else {
+                            // Fallback if texture failed to load (index -1)
+                            pc.texture_type = -1;
+                            pc.texture_index = -1;
+                        }
                      } else {
                          pc.texture_type = -1;
+                         pc.texture_index = -1;
                      }
                 } else {
                      pc.texture_type = -1;

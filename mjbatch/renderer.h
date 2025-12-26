@@ -319,6 +319,7 @@ private:
     // feat: mesh deduplication
     void InitGlobalGeometry();
 
+
 private:
     std::vector<mjModel*> models_;
 

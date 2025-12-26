@@ -158,6 +158,8 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
     std::vector<TextureInfo> tmpTextures_;
     tmpTextures_.reserve(model->ntex);
 
+    printf("[TextureDebug] Extracting %d textures from model...\n", model->ntex);
+
     for (int i = 0; i < model->ntex; ++i) {
         TextureInfo tex_info;
         tex_info.texture_id = i;
@@ -170,29 +172,49 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
         std::string tex_name = std::string(model->names + texadr);
         if(tex_name.empty() && tex_info.type == mjTEXTURE_SKYBOX) {
             tex_name = "skybox-" + std::to_string(i);
+        } else if (tex_name.empty()) {
+            tex_name = "unnamed_tex_" + std::to_string(i);
         }
         tex_info.name = tex_name;
+        // Debug Print 1: Raw Info
+        printf("[TextureDebug] Tex %d '%s': Raw Dim: %dx%d, Ch: %d, Type: %d\n", 
+               i, tex_name.c_str(), tex_info.width, tex_info.height, nchannel, tex_info.type);
 
         if (tex_info.type == mjTEXTURE_CUBE || tex_info.type == mjTEXTURE_SKYBOX) {
             // for those builtin cubemap, transform it to standard 2d and process in shader
             if (tex_info.height == tex_info.width * 6) {
                 tex_info.height = tex_info.height / 6;
+                printf("[TextureDebug]   -> Cubemap detected, adjusting height to %d\n", tex_info.height);
             }
         }
 
         // Always convert to RGBA
         tex_info.channels = 4;
-
         int tex_data_adr = model->tex_adr[i];
-        if (tex_data_adr < 0 || tex_data_adr >= model->ntexdata) continue;
+        // Safety Check 1: Valid Address
+        if (tex_data_adr < 0 || tex_data_adr >= model->ntexdata) {
+            printf("[TextureDebug]   -> SKIPPING: Invalid data address %d\n", tex_data_adr);
+            continue;
+        }
+
+        // Safety Check 2: Zero Dimensions
+        if (tex_info.width == 0 || tex_info.height == 0) {
+            printf("[TextureDebug]   -> SKIPPING: Zero dimension detected (%dx%d)\n", tex_info.width, tex_info.height);
+            continue;
+        }
 
         // NOTE: for 1*6 CubeMap，only get the first face data heres
         size_t pixel_count = static_cast<size_t>(tex_info.width) * tex_info.height;
         size_t data_size = pixel_count * tex_info.channels; // always * 4
+        
+        // Safety Check 3: Data Size
+        if (data_size == 0) {
+             printf("[TextureDebug]   -> SKIPPING: Calculated data size is 0\n");
+             continue;
+        }
         tex_info.data.resize(data_size);
-
         const unsigned char* tex_data = model->tex_data + tex_data_adr;
-
+        
         // RGB/Gray -> RGBA
         if (nchannel == 3) {
             for (size_t j = 0; j < pixel_count; ++j) {
@@ -264,9 +286,27 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
                 
                 continue; 
             }
-
+            // 3. Create Staging Buffer & Upload Data
+            VkDeviceSize staging_size = tx.data.size(); 
             uint32_t width = tx.width;
             uint32_t height = tx.height;
+
+            if (width == 0 || height == 0 || staging_size == 0) {
+                printf("[BatchRenderer] Warning: Skipping empty texture '%s' (W:%d H:%d Size:%lu)\n", 
+                       unique_name.c_str(), width, height, staging_size);
+                
+                // Push a placeholder/invalid mapping to maintain index alignment if needed, 
+                // OR just skip. Skipping usually safer but might shift indices if logic relies on i.
+                // Here we skip adding to 'textures_2d', but we MUST handle the lookup index.
+                
+                // Option A: Point to a fallback texture (e.g. index 0 if it exists) or -1
+                TextureMapping mapping = { -1, -1 }; 
+                result.global_texture_lookup.push_back(mapping);
+                continue; 
+            }
+
+            printf("[BatchRenderer] Uploading Texture: %s (%dx%d) | Size: %lu bytes\n", 
+                   unique_name.c_str(), width, height, staging_size);
 
             LocalTexture texture;
             TextureRequirements texture_reqs;
@@ -275,8 +315,6 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
             texture = res.first;
             texture_reqs = res.second;
 
-            // 3. Create Staging Buffer & Upload Data
-            VkDeviceSize staging_size = tx.data.size(); 
             
             HostBuffer texture_hb_staging = alloc.makeStagingBuffer(staging_size);
             memcpy(texture_hb_staging.ptr, tx.data.data(), staging_size);
@@ -456,6 +494,7 @@ void BatchRenderer::InitGlobalGeometry() {
     ProcessGeometry("__builtin_sphere",   [](){ return GeometryBuilder::BuildSphere(16, 16); }); // 16 stacks/slices
     ProcessGeometry("__builtin_capsule",  [](){ return GeometryBuilder::BuildCapsule(16, 16); });
     ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(100, 100); });
+    ProcessGeometry("__builtin_ellipsoid", [](){ return GeometryBuilder::BuildSphere(16, 16); }); // Reuse sphere
     ProcessGeometry("__builtin_plane",    [](){ return GeometryBuilder::BuildPlane(10); }); // Simple quad
 
     if (global_vertices.empty() || global_indices.empty()) {
@@ -1010,17 +1049,19 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                 std::string mesh_name;
                 if (geom.type == 0) { // mjGEOM_PLANE
                      mesh_name = "__builtin_plane";
-                } else if (geom.type == 2) { // mjGEOM_BOX
-                     mesh_name = "__builtin_box";
-                } else if (geom.type == 3) { // mjGEOM_SPHERE
+                } else if (geom.type == 2) { // mjGEOM_SPHERE
                      mesh_name = "__builtin_sphere";
-                } else if (geom.type == 4) { // mjGEOM_CAPSULE
+                } else if (geom.type == 3) { // mjGEOM_CAPSULE
                      mesh_name = "__builtin_capsule";
-                } else if (geom.type == 6) { // mjGEOM_CYLINDER
+                } else if (geom.type == 4) { // mjGEOM_ELLIPSOID
+                     mesh_name = "__builtin_ellipsoid"; 
+                } else if (geom.type == 5) { // mjGEOM_CYLINDER
                      mesh_name = "__builtin_cylinder";
+                } else if (geom.type == 6) { // mjGEOM_BOX
+                        mesh_name = "__builtin_box";
                 } else if (geom.type == 7) { // mjGEOM_MESH
                      mesh_name = (models_[i]->names) ? 
-                        std::string(models_[i]->names + models_[i]->name_meshadr[geom.dataid]) : 
+                        std::string(models_[i]->names + models_[i]->name_meshadr[geom.dataid/2]) : 
                         "mesh_" + std::to_string(geom.dataid);
                 } else {
                     continue; // Skip unsupported geoms

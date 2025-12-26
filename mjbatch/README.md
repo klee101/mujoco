@@ -75,7 +75,7 @@ cmake -S . -B build \
     -DGLFW_BUILD_WAYLAND=OFF \
     -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops"
 
-cmake ..     -DPython_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug
+cmake ..     -DPython3_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug
 ```
 
 > **提示:** `-march=native` 会针对当前机器的 CPU 架构进行最大优化。

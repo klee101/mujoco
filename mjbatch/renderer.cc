@@ -936,59 +936,62 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     for(int i = 0; i < config_.batch_size; ++i) {
         const EnvRenderSlot& slot = slots[i];
         
-        // --- 1. Update Camera UBO ---
-        CameraUBO cam_ubo{};
-        
-        // Use Camera 0 (Left Eye / Main View) for rendering
-        // In Python we designated index 0 as 'frontview' or main view
-        const ShmCamera& src_cam = slot.cameras[0]; 
+        for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
+            int resource_idx = i * SHM_NUM_CAMERAS  + c;
+            // --- 1. Update Camera UBO ---
+            CameraUBO cam_ubo{};
+            
+            // Use Camera 0 (Left Eye / Main View) for rendering
+            // In Python we designated index 0 as 'frontview' or main view
+            const ShmCamera& src_cam = slot.cameras[c]; 
 
-        // NOTE: here may cause some errors
-        cam_ubo.view_proj =
-            RowMajorToGLM(src_cam.proj) *
-            RowMajorToGLM(src_cam.view);
+            // NOTE: here may cause some errors
+            cam_ubo.view_proj =
+                RowMajorToGLM(src_cam.proj) *
+                RowMajorToGLM(src_cam.view);
 
-        cam_ubo.position = glm::vec3(
-            src_cam.pos[0],
-            src_cam.pos[1],
-            src_cam.pos[2]
-        );
+            cam_ubo.position = glm::vec3(
+                src_cam.pos[0],
+                src_cam.pos[1],
+                src_cam.pos[2]
+            );
 
-        std::memcpy(camera_staging_buffers_[i].ptr, &cam_ubo, sizeof(CameraUBO));
-        camera_staging_buffers_[i].flush(dev);
+            std::memcpy(camera_staging_buffers_[resource_idx].ptr, &cam_ubo, sizeof(CameraUBO));
+            camera_staging_buffers_[resource_idx].flush(dev);
 
-        VkBufferCopy camCopy{};
-        camCopy.size = sizeof(CameraUBO);
-        dev.dt.cmdCopyBuffer(cmd, camera_staging_buffers_[i].buffer, camera_uniform_buffers_[i].buffer, 1, &camCopy);
+            VkBufferCopy camCopy{};
+            camCopy.size = sizeof(CameraUBO);
+            dev.dt.cmdCopyBuffer(cmd, camera_staging_buffers_[resource_idx].buffer, camera_uniform_buffers_[resource_idx].buffer, 1, &camCopy);
 
-        // --- 2. Update Light UBO (Headlamp Mode) ---
-        // Since SHM has no lights, we create a light at the camera position
-        LightUBO light_ubo{};
-        light_ubo.lightCount = 1;
-        
-        // Light 0
-        light_ubo.lights[0].position[0] = src_cam.pos[0];
-        light_ubo.lights[0].position[1] = src_cam.pos[1];
-        light_ubo.lights[0].position[2] = src_cam.pos[2];
-        
-        light_ubo.lights[0].diffuse[0] = 0.8f; 
-        light_ubo.lights[0].diffuse[1] = 0.8f; 
-        light_ubo.lights[0].diffuse[2] = 0.8f;
-        
-        light_ubo.lights[0].specular[0] = 0.5f; 
-        light_ubo.lights[0].specular[1] = 0.5f; 
-        light_ubo.lights[0].specular[2] = 0.5f;
-        
-        light_ubo.lights[0].attenuation[0] = 1.0f; // Constant
-        light_ubo.lights[0].attenuation[1] = 0.0f; // Linear
-        light_ubo.lights[0].attenuation[2] = 0.0f; // Quadratic
+            // --- 2. Update Light UBO (Headlamp Mode) ---
+            // Since SHM has no lights, we create a light at the camera position
+            LightUBO light_ubo{};
+            light_ubo.lightCount = 1;
+            
+            // Light 0
+            light_ubo.lights[0].position[0] = src_cam.pos[0];
+            light_ubo.lights[0].position[1] = src_cam.pos[1];
+            light_ubo.lights[0].position[2] = src_cam.pos[2];
+            
+            light_ubo.lights[0].diffuse[0] = 0.8f; 
+            light_ubo.lights[0].diffuse[1] = 0.8f; 
+            light_ubo.lights[0].diffuse[2] = 0.8f;
+            
+            light_ubo.lights[0].specular[0] = 0.5f; 
+            light_ubo.lights[0].specular[1] = 0.5f; 
+            light_ubo.lights[0].specular[2] = 0.5f;
+            
+            light_ubo.lights[0].attenuation[0] = 1.0f; // Constant
+            light_ubo.lights[0].attenuation[1] = 0.0f; // Linear
+            light_ubo.lights[0].attenuation[2] = 0.0f; // Quadratic
 
-        std::memcpy(light_staging_buffers_[i].ptr, &light_ubo, sizeof(LightUBO));
-        light_staging_buffers_[i].flush(dev);
+            std::memcpy(light_staging_buffers_[resource_idx].ptr, &light_ubo, sizeof(LightUBO));
+            light_staging_buffers_[resource_idx].flush(dev);
 
-        VkBufferCopy lightCopy{};
-        lightCopy.size = sizeof(LightUBO);
-        dev.dt.cmdCopyBuffer(cmd, light_staging_buffers_[i].buffer, light_uniform_buffers_[i].buffer, 1, &lightCopy);
+            VkBufferCopy lightCopy{};
+            lightCopy.size = sizeof(LightUBO);
+            dev.dt.cmdCopyBuffer(cmd, light_staging_buffers_[resource_idx].buffer, light_uniform_buffers_[resource_idx].buffer, 1, &lightCopy);
+        }
     }
 
     REQ_VK(dev.dt.endCommandBuffer(cmd));
@@ -1004,172 +1007,176 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     return true;
 }
 
-// [ADD] New Function: Record Command Buffers directly from SHM structs
+// TODO: use a meta FrameBuffer to store the images 
 bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count) {
     Device &dev = *device_;
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
     for (int i = 0; i < count; ++i) {
-        VkCommandBuffer cmd = command_buffers_[i];
+
         const EnvRenderSlot& slot = slots[i];
-        
-        // --- 1. Begin Recording & Render Pass ---
-        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-        
-        VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        renderPassInfo.renderPass = render_context_->renderPass;
-        renderPassInfo.framebuffer = framebuffers_[i];
-        renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
-        
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-        clearValues[1].depthStencil = {1.0f, 0};
-        renderPassInfo.clearValueCount = clearValues.size();
-        renderPassInfo.pClearValues = clearValues.data();
-        
-        dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        
-        // --- 2. Bind Pipeline & Global State ---
-        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-        
-        VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+        for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
+            int resource_idx = i * SHM_NUM_CAMERAS + c;
 
-        // Bind Descriptor Sets (UBOs + Textures)
-        std::vector<VkDescriptorSet> sets = { descriptor_sets_[i], global_texture_descriptor_set };
-        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                     0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-
-        // --- 3. Bind Global Vertex/Index Buffers ---
-        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
-            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            // --- 4. Iteration over SHM Geoms ---
-            int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+            VkCommandBuffer cmd = command_buffers_[resource_idx];
+            // --- 1. Begin Recording & Render Pass ---
+            VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
             
-            for (int g = 0; g < active_geoms; ++g) {
-                const ShmGeom& geom = slot.geoms[g];
+            VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+            renderPassInfo.renderPass = render_context_->renderPass;
+            renderPassInfo.framebuffer = framebuffers_[resource_idx];
+            renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
+            
+            std::array<VkClearValue, 2> clearValues{};
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
+            clearValues[1].depthStencil = {1.0f, 0};
+            renderPassInfo.clearValueCount = clearValues.size();
+            renderPassInfo.pClearValues = clearValues.data();
+            
+            dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            
+            // --- 2. Bind Pipeline & Global State ---
+            dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
+            
+            VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+            dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+            VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+            dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+
+            // Bind Descriptor Sets (UBOs + Textures)
+            std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
+            dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                         0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+            // --- 3. Bind Global Vertex/Index Buffers ---
+            if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
+                VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+                vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+                // --- 4. Iteration over SHM Geoms ---
+                int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
                 
-                // [A] Determine Mesh Name from Type/DataID
-                std::string mesh_name;
-                if (geom.type == 0) { // mjGEOM_PLANE
-                     mesh_name = "__builtin_plane";
-                } else if (geom.type == 2) { // mjGEOM_SPHERE
-                     mesh_name = "__builtin_sphere";
-                } else if (geom.type == 3) { // mjGEOM_CAPSULE
-                     mesh_name = "__builtin_capsule";
-                } else if (geom.type == 4) { // mjGEOM_ELLIPSOID
-                     mesh_name = "__builtin_ellipsoid"; 
-                } else if (geom.type == 5) { // mjGEOM_CYLINDER
-                     mesh_name = "__builtin_cylinder";
-                } else if (geom.type == 6) { // mjGEOM_BOX
-                        mesh_name = "__builtin_box";
-                } else if (geom.type == 7) { // mjGEOM_MESH
-                     mesh_name = (models_[i]->names) ? 
-                        std::string(models_[i]->names + models_[i]->name_meshadr[geom.dataid/2]) : 
-                        "mesh_" + std::to_string(geom.dataid);
-                } else {
-                    continue; // Skip unsupported geoms
-                }
-
-                // [B] Lookup in Cache
-                auto it = global_mesh_cache_.find(mesh_name);
-                if (it == global_mesh_cache_.end()) continue;
-                const MeshEntry& entry = it->second;
-
-                // [C] Construct Model Matrix
-                // SHM provides 3x3 Rotation (row-major 9 floats) and Pos (3 floats)
-                glm::mat4 model_mat(1.0f);
-                
-                // Copy rotation (converting Row-Major SHM to Column-Major GLM)
-                // geom.mat is [r00, r01, r02, r10, r11, r12, r20, r21, r22]
-                model_mat[0][0] = geom.mat[0]; model_mat[1][0] = geom.mat[1]; model_mat[2][0] = geom.mat[2];
-                model_mat[0][1] = geom.mat[3]; model_mat[1][1] = geom.mat[4]; model_mat[2][1] = geom.mat[5];
-                model_mat[0][2] = geom.mat[6]; model_mat[1][2] = geom.mat[7]; model_mat[2][2] = geom.mat[8];
-
-                // Set position
-                model_mat[3][0] = geom.pos[0];
-                model_mat[3][1] = geom.pos[1];
-                model_mat[3][2] = geom.pos[2];
-
-                // Apply Scale based on Type
-                // Primitives are usually unit-sized in cache, so we scale them.
-                if (geom.type == 7) { // Mesh
-                     // Meshes are usually pre-baked or scale is Identity
-                     // If MuJoCo resizes mesh, apply scale here.
-                     // Typically 'geom.size' is BBox, not transform scale for meshes.
-                } else if (geom.type == 0) { // Plane
-                    // Scale x/y by size[0], size[1]
-                    float sx = (geom.size[0] > 0) ? geom.size[0] : 1000.0f;
-                    float sy = (geom.size[1] > 0) ? geom.size[1] : 1000.0f;
-                    model_mat = glm::scale(model_mat, glm::vec3(sx, sy, 1.0f));
+                for (int g = 0; g < active_geoms; ++g) {
+                    const ShmGeom& geom = slot.geoms[g];
                     
-                     // Z scale 1 for plane
-                } else if (geom.type == 2) { // Sphere
-                     model_mat = glm::scale(model_mat, glm::vec3(geom.size[0]));
-                } else {
-                     // Box, etc: Full 3D scale
-                     model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], geom.size[2]));
-                }
-                
-                // [D] Push Constants
-                PushConstants pc{};
-                pc.model = model_mat;
-                pc.rgba = glm::vec4(geom.rgba[0], geom.rgba[1], geom.rgba[2], geom.rgba[3]);
-                pc.specular = geom.specular;
-                pc.emission = geom.emission;
-                pc.shininess = geom.shininess;
-                pc.reflectance = geom.reflectance;
+                    // [A] Determine Mesh Name from Type/DataID
+                    std::string mesh_name;
+                    if (geom.type == 0) { // mjGEOM_PLANE
+                        mesh_name = "__builtin_plane";
+                    } else if (geom.type == 2) { // mjGEOM_SPHERE
+                        mesh_name = "__builtin_sphere";
+                    } else if (geom.type == 3) { // mjGEOM_CAPSULE
+                        mesh_name = "__builtin_capsule";
+                    } else if (geom.type == 4) { // mjGEOM_ELLIPSOID
+                        mesh_name = "__builtin_ellipsoid"; 
+                    } else if (geom.type == 5) { // mjGEOM_CYLINDER
+                        mesh_name = "__builtin_cylinder";
+                    } else if (geom.type == 6) { // mjGEOM_BOX
+                            mesh_name = "__builtin_box";
+                    } else if (geom.type == 7) { // mjGEOM_MESH
+                        mesh_name = (models_[i]->names) ? 
+                            std::string(models_[i]->names + models_[i]->name_meshadr[geom.dataid/2]) : 
+                            "mesh_" + std::to_string(geom.dataid);
+                    } else {
+                        continue; // Skip unsupported geoms
+                    }
 
-                // [MODIFIED] Texture Logic
-                int resolved_tex_id = -1;
-                
-                // 1. Resolve matid -> texid
-                if (geom.matid >= 0) {
-                    resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
-                }
-                // 2. Global Lookup
-                if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
-                     int global_tex_id = texture_offsets_[i] + resolved_tex_id;
-                     
-                     if (global_tex_id < material_textures_.global_texture_lookup.size()) {
-                        const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
+                    // [B] Lookup in Cache
+                    auto it = global_mesh_cache_.find(mesh_name);
+                    if (it == global_mesh_cache_.end()) continue;
+                    const MeshEntry& entry = it->second;
+
+                    // [C] Construct Model Matrix
+                    // SHM provides 3x3 Rotation (row-major 9 floats) and Pos (3 floats)
+                    glm::mat4 model_mat(1.0f);
+                    
+                    // Copy rotation (converting Row-Major SHM to Column-Major GLM)
+                    // geom.mat is [r00, r01, r02, r10, r11, r12, r20, r21, r22]
+                    model_mat[0][0] = geom.mat[0]; model_mat[1][0] = geom.mat[1]; model_mat[2][0] = geom.mat[2];
+                    model_mat[0][1] = geom.mat[3]; model_mat[1][1] = geom.mat[4]; model_mat[2][1] = geom.mat[5];
+                    model_mat[0][2] = geom.mat[6]; model_mat[1][2] = geom.mat[7]; model_mat[2][2] = geom.mat[8];
+
+                    // Set position
+                    model_mat[3][0] = geom.pos[0];
+                    model_mat[3][1] = geom.pos[1];
+                    model_mat[3][2] = geom.pos[2];
+
+                    // Apply Scale based on Type
+                    // Primitives are usually unit-sized in cache, so we scale them.
+                    if (geom.type == 7) { // Mesh
+                        // Meshes are usually pre-baked or scale is Identity
+                        // If MuJoCo resizes mesh, apply scale here.
+                        // Typically 'geom.size' is BBox, not transform scale for meshes.
+                    } else if (geom.type == 0) { // Plane
+                        // Scale x/y by size[0], size[1]
+                        float sx = (geom.size[0] > 0) ? geom.size[0] : 1000.0f;
+                        float sy = (geom.size[1] > 0) ? geom.size[1] : 1000.0f;
+                        model_mat = glm::scale(model_mat, glm::vec3(sx, sy, 1.0f));
                         
-                        // Valid texture found?
-                        if (tex_map.index_in_array >= 0) {
-                            pc.texture_type = tex_map.type;
-                            pc.texture_index = tex_map.index_in_array;
+                        // Z scale 1 for plane
+                    } else if (geom.type == 2) { // Sphere
+                        model_mat = glm::scale(model_mat, glm::vec3(geom.size[0]));
+                    } else {
+                        // Box, etc: Full 3D scale
+                        model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], geom.size[2]));
+                    }
+                    
+                    // [D] Push Constants
+                    PushConstants pc{};
+                    pc.model = model_mat;
+                    pc.rgba = glm::vec4(geom.rgba[0], geom.rgba[1], geom.rgba[2], geom.rgba[3]);
+                    pc.specular = geom.specular;
+                    pc.emission = geom.emission;
+                    pc.shininess = geom.shininess;
+                    pc.reflectance = geom.reflectance;
+
+                    // [MODIFIED] Texture Logic
+                    int resolved_tex_id = -1;
+                    
+                    // 1. Resolve matid -> texid
+                    if (geom.matid >= 0) {
+                        resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
+                    }
+                    // 2. Global Lookup
+                    if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
+                        int global_tex_id = texture_offsets_[i] + resolved_tex_id;
+                        
+                        if (global_tex_id < material_textures_.global_texture_lookup.size()) {
+                            const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
+                            
+                            // Valid texture found?
+                            if (tex_map.index_in_array >= 0) {
+                                pc.texture_type = tex_map.type;
+                                pc.texture_index = tex_map.index_in_array;
+                            } else {
+                                // Fallback if texture failed to load (index -1)
+                                pc.texture_type = -1;
+                                pc.texture_index = -1;
+                            }
                         } else {
-                            // Fallback if texture failed to load (index -1)
                             pc.texture_type = -1;
                             pc.texture_index = -1;
                         }
-                     } else {
-                         pc.texture_type = -1;
-                         pc.texture_index = -1;
-                     }
-                } else {
-                     pc.texture_type = -1;
-                     pc.texture_index = -1;
+                    } else {
+                        pc.texture_type = -1;
+                        pc.texture_index = -1;
+                    }
+
+                    dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
+                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                        0, sizeof(PushConstants), &pc);
+
+                    vkCmdDrawIndexed(cmd, entry.index_count, 1, entry.index_offset, entry.vertex_offset, 0);
                 }
-
-                dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                      0, sizeof(PushConstants), &pc);
-
-                vkCmdDrawIndexed(cmd, entry.index_count, 1, entry.index_offset, entry.vertex_offset, 0);
             }
-        }
 
-        dev.dt.cmdEndRenderPass(cmd);
-        REQ_VK(dev.dt.endCommandBuffer(cmd));
+            dev.dt.cmdEndRenderPass(cmd);
+            REQ_VK(dev.dt.endCommandBuffer(cmd));
+        }
     }
     
     return true;
@@ -1341,6 +1348,8 @@ bool BatchRenderer::SubmitAndWait() {
 bool BatchRenderer::ReadbackResults() {
     Device &dev = *device_;
     VkCommandBuffer cmd = render_context_->load_cmd_;
+
+    size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
     
     // --- 1. Begin Recording ---
     VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -1348,7 +1357,7 @@ bool BatchRenderer::ReadbackResults() {
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
 
     // --- 2. Record Commands for ALL batches ---
-    for (int i = 0; i < config_.batch_size; ++i) {
+    for (int i = 0; i < total_slots; ++i) {
         // A. Barrier: Color Attachment -> Transfer Src
         VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -1414,16 +1423,16 @@ bool BatchRenderer::ReadbackResults() {
     }
 
     // --- 5. Zero-Copy  ---
-    frames.resize(config_.batch_size);
+    frames.resize(total_slots);
 
     {
         ScopedNvtxRange range("CPU_Invalidate_Cache", 0xFF4682B4);
         
         // prepare Invalidate Ranges
         std::vector<VkMappedMemoryRange> ranges;
-        ranges.reserve(config_.batch_size);
+        ranges.reserve(total_slots);
 
-        for (int i = 0; i < config_.batch_size; ++i) {
+        for (int i = 0; i < total_slots; ++i) {
             VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
             range.memory = staging_buffers_[i].getMemHdl(); 
             range.offset = 0; 
@@ -1441,7 +1450,7 @@ bool BatchRenderer::ReadbackResults() {
         uint32_t width = (uint32_t)config_.frame_width;
         uint32_t height = (uint32_t)config_.frame_height;
 
-        for (int i = 0; i < config_.batch_size; ++i) {
+        for (int i = 0; i < total_slots; ++i) {
             frames[i].data = (const uint8_t*)staging_buffers_[i].ptr;
             frames[i].width = width;
             frames[i].height = height;
@@ -1727,14 +1736,16 @@ bool BatchRenderer::CreatePipeline() {
 bool BatchRenderer::CreateFramebuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
+
+    size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
     
-    framebuffers_.reserve(config_.batch_size);
-    color_images_.reserve(config_.batch_size);
-    depth_images_.reserve(config_.batch_size);
-    color_image_views_.reserve(config_.batch_size);
-    depth_image_views_.reserve(config_.batch_size);
+    framebuffers_.reserve(total_slots);
+    color_images_.reserve(total_slots);
+    depth_images_.reserve(total_slots);
+    color_image_views_.reserve(total_slots);
+    depth_image_views_.reserve(total_slots);
     
-    for (int i = 0; i < config_.batch_size; ++i) {
+    for (int i = 0; i < total_slots; ++i) {
         // Create color image
         auto color_img = allocator.makeColorAttachment(
             config_.frame_width, config_.frame_height, 1, VK_FORMAT_R8G8B8A8_UNORM);
@@ -1797,12 +1808,14 @@ bool BatchRenderer::CreateFramebuffers() {
 bool BatchRenderer::CreateBuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
+
+    size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
     
     // Create command pool
     command_pool_ = makeCmdPool(dev, dev.gfxQF);
     
     // Allocate command buffers
-    command_buffers_.resize(config_.batch_size);
+    command_buffers_.resize(total_slots);
     VkCommandBufferAllocateInfo allocCmdInfo{};
     allocCmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocCmdInfo.commandPool = command_pool_;
@@ -1816,24 +1829,24 @@ bool BatchRenderer::CreateBuffers() {
         // Create descriptor pool
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = config_.batch_size; // Camera UBOs
+        poolSizes[0].descriptorCount = total_slots; // Camera UBOs
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[1].descriptorCount = config_.batch_size; // Light UBOs
+        poolSizes[1].descriptorCount = total_slots; // Light UBOs
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
         poolInfo.pPoolSizes = poolSizes.data();
-        poolInfo.maxSets = config_.batch_size;
+        poolInfo.maxSets = total_slots;
         REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &descriptor_pool_));
         
         // Allocate descriptor sets
-        descriptor_sets_.resize(config_.batch_size);
-        std::vector<VkDescriptorSetLayout> layouts(config_.batch_size, descriptor_set_layout_);
+        descriptor_sets_.resize(total_slots);
+        std::vector<VkDescriptorSetLayout> layouts(total_slots, descriptor_set_layout_);
         VkDescriptorSetAllocateInfo allocDesInfo{};
         allocDesInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocDesInfo.descriptorPool = descriptor_pool_;
-        allocDesInfo.descriptorSetCount = config_.batch_size;
+        allocDesInfo.descriptorSetCount = total_slots;
         allocDesInfo.pSetLayouts = layouts.data();
         REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocDesInfo, descriptor_sets_.data()));
     }
@@ -1873,7 +1886,7 @@ bool BatchRenderer::CreateBuffers() {
 
     light_uniform_buffers_.clear();
     light_staging_buffers_.clear();
-    for (int i = 0; i < config_.batch_size; ++i) {
+    for (int i = 0; i < total_slots; ++i) {
         // Camera UBO
         auto camera_ubo = allocator.makeLocalBuffer(
             sizeof(CameraUBO), 
@@ -1967,8 +1980,8 @@ bool BatchRenderer::CreateBuffers() {
     // Create staging buffers for readback
     // BUGFIX: with the zero-copy logic, this staging buffer need to be changed
     staging_buffers_.clear();
-    staging_buffers_.reserve(config_.batch_size);
-    for (size_t i = 0; i < config_.batch_size; ++i) {
+    staging_buffers_.reserve(total_slots);
+    for (size_t i = 0; i < total_slots; ++i) {
         size_t bufferSize = config_.frame_width * config_.frame_height * 4;
         staging_buffers_.emplace_back(
             render_context_->allocator.makeStagingBuffer2(bufferSize)

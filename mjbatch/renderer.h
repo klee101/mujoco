@@ -354,6 +354,8 @@ private:
     VkShaderModule frag_shader_module_ = VK_NULL_HANDLE;
 
     // Framebuffers and images for batch rendering
+    // TODO: use the meta Framebuffer 
+    // TODO: fill the FrameBuffer with scenes * views (batch_size * 3) 
     std::vector<VkFramebuffer> framebuffers_;
     std::vector<mujoco::mjbatch::LocalImage> color_images_;
     std::vector<mujoco::mjbatch::LocalImage> depth_images_;

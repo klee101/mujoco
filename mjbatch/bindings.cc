@@ -65,8 +65,10 @@ PYBIND11_MODULE(mjb, m) {
         .def("render_from_shm", [](BatchRenderer& self, uintptr_t address, int batch_idx, int max_geom, int max_light) {
             return self.RenderFromMemory(reinterpret_cast<uint8_t*>(address), batch_idx, max_geom, max_light).IsSuccess();
         })
-        .def("get_image", [](BatchRenderer& self, int batch_idx) {
-             const uint8_t* ptr = self.GetRGBFrame(batch_idx);
+        .def("get_image", [](BatchRenderer& self, int batch_idx, int cam_idx) {
+             int flat_idx = batch_idx * 3 + cam_idx; 
+            
+             const uint8_t* ptr = self.GetRGBFrame(flat_idx);
              if (!ptr) throw std::runtime_error("Invalid batch index or uninitialized");
              
              size_t h = self.GetConfig().frame_height; 

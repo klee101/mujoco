@@ -311,7 +311,6 @@ Material mat;
         return mat; 
     }
 
-    // printf("--- Geom ID %d (MatID: %d) ---\n", geom->objid, geom->matid); 
 
     // 3. 检查材质 ID 是否有效
     if (geom->matid >= 0 && geom->matid < model->nmat) {

@@ -24,6 +24,9 @@ doc/_build
 # third-party / external deps
 external/
 
+*.ngfx-gputrace
+ngfx_report/
+
 # Exclude macOS folder attributes
 .DS_Store
 

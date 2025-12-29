@@ -21,6 +21,9 @@ build_cmake/
 python/dist/
 doc/_build
 
+# third-party / external deps
+external/
+
 # Exclude macOS folder attributes
 .DS_Store
 

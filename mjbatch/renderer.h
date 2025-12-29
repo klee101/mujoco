@@ -173,7 +173,7 @@ struct BatchRendererConfig {
     bool enable_depth = true;
 
     // Vulkan setup
-    bool enable_validation = true;
+    bool enable_validation = false;
     int max_frames_in_flight = 1;
 
     // Logging

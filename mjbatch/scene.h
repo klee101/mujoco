@@ -123,7 +123,6 @@ struct LightInfo {
 };
 
 // [MODIFIED] Render-ready drawable object
-// 不再持有几何数据指针，而是持有Key(name)用于全局查找
 struct Drawable {
     // Identify the geometry in the Global Buffer
     // 对于 Mesh，这是 xml 中的 mesh name   
@@ -138,8 +137,6 @@ struct Drawable {
     int32_t mesh_id;       // -1 if not a mesh (primitive)
     bool visible;          // Visibility flag
 };
-
-
 
 // Texture information
 struct TextureInfo {
@@ -162,17 +159,16 @@ public:
     void Update(const mjModel* model, const mjvScene* scene);
 
     // Get render-ready data
-// Accessors
+    // Accessors
     const std::vector<Drawable>& GetDrawables() const { return drawables_; }
     const CameraInfo& GetCamera() const { return camera_info_; }
     const std::vector<LightInfo>& GetLights() const { return lights_; }
-    // 纹理通常在 Init 阶段由 BatchRenderer 统一处理，Scene 中保留它是为了方便查找
     const std::vector<TextureInfo>& GetTextures() const { return textures_; }
 
     void UpdateCameraFromSimulation(const mjModel* m, const mjData* d, int cam_id, float aspect_ratio);
     int FindCameraID(const mjModel* m, const char* cam_name);
     CameraUBO GetCameraUBO() const {
-        CameraUBO ubo = {}; // 初始化为 0
+        CameraUBO ubo = {}; 
 
         // 1. 矩阵直接拷贝 (GLM 默认列主序，符合 HLSL/GLSL 默认行为)
         ubo.view_proj = camera_info_.view_proj_matrix;

@@ -14,14 +14,44 @@
 
 #include "builtin.h"
 #include <cmath>
+#include <algorithm>
+#include <limits>
+#include <vector>
 
 namespace mujoco {
 namespace mjbatch {
 
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+namespace {
+
+// Helper to calculate AABB from a set of vertices (used for Mesh/HField)
+AABB ComputeAABB(const std::vector<Vertex>& vertices) {
+    float3 min_bound = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    float3 max_bound = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+
+    if (vertices.empty()) {
+        return { {0,0,0}, {0,0,0} };
+    }
+
+    for (const auto& v : vertices) {
+        // Assuming Vertex.position is accessible via [] operator or .x .y .z
+        // Based on BuildMesh usage: vertex.position[0]
+        min_bound.x = std::min(min_bound.x, v.position[0]);
+        min_bound.y = std::min(min_bound.y, v.position[1]);
+        min_bound.z = std::min(min_bound.z, v.position[2]);
+
+        max_bound.x = std::max(max_bound.x, v.position[0]);
+        max_bound.y = std::max(max_bound.y, v.position[1]);
+        max_bound.z = std::max(max_bound.z, v.position[2]);
+    }
+
+    return {min_bound, max_bound};
+}
+
+} // namespace
 
 float4 GeometryBuilder::CalculateOrientation(float3 normal) {
     float len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
@@ -94,21 +124,25 @@ std::size_t GeometryBuilder::NumIndicesPerSide(int num_quads_per_axis) {
 // Primitive Builders
 // ============================================================================
 
-GeometryBuffers GeometryBuilder::BuildLine() {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildLine() {
+    GeometryBuffer result;
+    // Line goes from (0,0,0) to (0,0,1)
+    AABB aabb = { {0, 0, 0}, {0, 0, 1} };
+    
     result.vertices = {
         Vertex({0, 0, 0}, {0, 0, 1}, {0, 0}, {1, 1, 1, 1}),
         Vertex({0, 0, 1}, {0, 0, 1}, {1, 0}, {1, 1, 1, 1})
     };
     result.indices = {0, 1};
-    return result;
+    return {result, aabb};
 }
 
 // FIXED: BuildPlane with correct winding
-// BUGFIX: Plane not visible??
+GeometryAABB GeometryBuilder::BuildPlane(int num_quads_per_axis) {
+    GeometryBuffer result;
+    // Plane is generated on XY from -1 to 1, Z is 0
+    AABB aabb = { {-1, -1, 0}, {1, 1, 0} };
 
-GeometryBuffers GeometryBuilder::BuildPlane(int num_quads_per_axis) {
-    GeometryBuffers result;
     // 网格的半边长是 1.0，所以总宽度是 2.0。
     const float total_width = 2.0f; 
     // 每个小格的边长
@@ -169,11 +203,14 @@ GeometryBuffers GeometryBuilder::BuildPlane(int num_quads_per_axis) {
         }
     }
     
-    return result;
+    return {result, aabb};
 }
 
-GeometryBuffers GeometryBuilder::BuildLineBox() {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildLineBox() {
+    GeometryBuffer result;
+    // Box corners are -1 to 1
+    AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
+
     const float3 normal{0, 0, 1};
     result.vertices = {
         Vertex({-1, -1, -1}, normal, {0, 0}, {1, 1, 1, 1}),
@@ -190,12 +227,15 @@ GeometryBuffers GeometryBuilder::BuildLineBox() {
         4, 5,  5, 7,  7, 6,  6, 4,  // Top
         2, 6,  3, 7,  0, 4,  1, 5   // Edges
     };
-    return result;
+    return {result, aabb};
 }
 
 // FIXED: BuildBox with correct vertex ordering
-GeometryBuffers GeometryBuilder::BuildBox(int num_quads_per_axis) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildBox(int num_quads_per_axis) {
+    GeometryBuffer result;
+    // Box faces are at -1 and 1
+    AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
+
     const float quad_size = 2.0f / static_cast<float>(num_quads_per_axis);
     const int vertices_per_side = NumVerticesPerSide(num_quads_per_axis);
     
@@ -245,12 +285,15 @@ GeometryBuffers GeometryBuilder::BuildBox(int num_quads_per_axis) {
         }
     }
     
-    return result;
+    return {result, aabb};
 }
 
 // FIXED: BuildSphere with consistent winding
-GeometryBuffers GeometryBuilder::BuildSphere(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildSphere(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Unit sphere
+    AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
+
     const float lat_delta = M_PI / static_cast<float>(num_stacks + 1);
     const float lon_delta = 2.0f * M_PI / static_cast<float>(num_slices);
     
@@ -315,11 +358,14 @@ GeometryBuffers GeometryBuilder::BuildSphere(int num_stacks, int num_slices) {
         result.indices.push_back(last_ring + lon);
     }
     
-    return result;
+    return {result, aabb};
 }
 
-GeometryBuffers GeometryBuilder::BuildCone(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildCone(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Radius 1, Z goes from 0 to 1
+    AABB aabb = { {-1, -1, 0}, {1, 1, 1} };
+
     const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
     const float delta_radius = 1.0f / static_cast<float>(num_stacks);
     
@@ -351,11 +397,14 @@ GeometryBuffers GeometryBuilder::BuildCone(int num_stacks, int num_slices) {
                 base, base + next_j, next_base + next_j, next_base);        }
     }
     
-    return result;
+    return {result, aabb};
 }
 
-GeometryBuffers GeometryBuilder::BuildDisk(int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildDisk(int num_slices) {
+    GeometryBuffer result;
+    // Radius 1, Z is 0
+    AABB aabb = { {-1, -1, 0}, {1, 1, 0} };
+
     const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
     const float3 normal{0, 0, 1};
     
@@ -379,11 +428,14 @@ GeometryBuffers GeometryBuilder::BuildDisk(int num_slices) {
         result.indices.push_back(1 + next);
     }
     
-    return result;
+    return {result, aabb};
 }
 
-GeometryBuffers GeometryBuilder::BuildDome(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildDome(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Hemisphere: Radius 1, Z from 0 to 1
+    AABB aabb = { {-1, -1, 0}, {1, 1, 1} };
+
     const float lat_delta = 0.5f * M_PI / static_cast<float>(num_stacks);
     const float lon_delta = 2.0f * M_PI / static_cast<float>(num_slices);
     
@@ -427,11 +479,14 @@ GeometryBuffers GeometryBuilder::BuildDome(int num_stacks, int num_slices) {
         row_start += num_slices;
     }
     
-    return result;
+    return {result, aabb};
 }
 
-GeometryBuffers GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Cylinder without caps: Z from -1 to 1, Radius 1
+    AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
+
     const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
     const float delta_z = 2.0f / static_cast<float>(num_stacks);
     
@@ -459,7 +514,7 @@ GeometryBuffers GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
                 base, next_base, next_base + 1, base + 1);        }
     }
     
-    return result;
+    return {result, aabb};
 }
 
 // ============================================================================
@@ -467,98 +522,105 @@ GeometryBuffers GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
 // ============================================================================
 
 // Build capsule: tube + 2 domes
-GeometryBuffers GeometryBuilder::BuildCapsule(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildCapsule(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Tube is [-1, 1] on Z.
+    // Top Dome is added at Z+1 (range [1, 2])
+    // Bottom Dome is added at Z-1 (range [-2, -1])
+    // Radius is 1.
+    AABB aabb = { {-1, -1, -2}, {1, 1, 2} };
     
     // Build tube (middle part) - add first
-    GeometryBuffers tube = BuildTube(num_stacks, num_slices);
-    for (const auto& v : tube.vertices) {
+    GeometryAABB tube = BuildTube(num_stacks, num_slices);
+    for (const auto& v : tube.buffers.vertices) {
         result.vertices.push_back(v);
     }
-    for (uint32_t idx : tube.indices) {
+    for (uint32_t idx : tube.buffers.indices) {
         result.indices.push_back(idx);
     }
     
     // Build top dome
-    GeometryBuffers top_dome = BuildDome(num_stacks / 2, num_slices);
-    uint32_t top_vertex_offset = static_cast<uint32_t>(tube.vertices.size());
-    for (auto& v : top_dome.vertices) {
+    GeometryAABB top_dome = BuildDome(num_stacks / 2, num_slices);
+    uint32_t top_vertex_offset = static_cast<uint32_t>(tube.buffers.vertices.size());
+    for (auto& v : top_dome.buffers.vertices) {
         v.position.z += 1.0f;  // Translate up
         result.vertices.push_back(v);
     }
     // Add top dome indices with offset
-    for (uint32_t idx : top_dome.indices) {
+    for (uint32_t idx : top_dome.buffers.indices) {
         result.indices.push_back(top_vertex_offset + idx);
     }
     
     // Build bottom dome (flipped)
-    GeometryBuffers bottom_dome = BuildDome(num_stacks / 2, num_slices);
-    uint32_t bottom_vertex_offset = static_cast<uint32_t>(tube.vertices.size() + top_dome.vertices.size());
-    for (auto& v : bottom_dome.vertices) {
+    GeometryAABB bottom_dome = BuildDome(num_stacks / 2, num_slices);
+    uint32_t bottom_vertex_offset = static_cast<uint32_t>(tube.buffers.vertices.size() + top_dome.buffers.vertices.size());
+    for (auto& v : bottom_dome.buffers.vertices) {
         v.position.z -= 1.0f;  // Translate down
         v.position.z = -v.position.z;  // Flip
         v.normal.z = -v.normal.z;  // Flip normal
         result.vertices.push_back(v);
     }
     // Add bottom dome indices with offset (reverse winding for flip)
-    for (size_t i = 0; i < bottom_dome.indices.size(); i += 3) {
-        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 0]);
-        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 2]);
-        result.indices.push_back(bottom_vertex_offset + bottom_dome.indices[i + 1]);
+    for (size_t i = 0; i < bottom_dome.buffers.indices.size(); i += 3) {
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.buffers.indices[i + 0]);
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.buffers.indices[i + 2]);
+        result.indices.push_back(bottom_vertex_offset + bottom_dome.buffers.indices[i + 1]);
     }
     
-    return result;
+    return {result, aabb};
 }
 
 // FIXED: BuildCylinder with proper disk orientation
-GeometryBuffers GeometryBuilder::BuildCylinder(int num_stacks, int num_slices) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildCylinder(int num_stacks, int num_slices) {
+    GeometryBuffer result;
+    // Cylinder is Radius 1, Z from -1 to 1
+    AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
     
     // Build tube
-    GeometryBuffers tube = BuildTube(num_stacks, num_slices);
-    for (const auto& v : tube.vertices) {
+    GeometryAABB tube = BuildTube(num_stacks, num_slices);
+    for (const auto& v : tube.buffers.vertices) {
         result.vertices.push_back(v);
     }
-    for (uint32_t idx : tube.indices) {
+    for (uint32_t idx : tube.buffers.indices) {
         result.indices.push_back(idx);
     }
     
     // Top disk (+Z face, normal pointing up)
-    GeometryBuffers top_disk = BuildDisk(num_slices);
+    GeometryAABB top_disk = BuildDisk(num_slices);
     uint32_t top_offset = static_cast<uint32_t>(result.vertices.size());
-    for (auto& v : top_disk.vertices) {
+    for (auto& v : top_disk.buffers.vertices) {
         v.position.z = 1.0f;
         result.vertices.push_back(v);
     }
-    for (uint32_t idx : top_disk.indices) {
+    for (uint32_t idx : top_disk.buffers.indices) {
         result.indices.push_back(top_offset + idx);
     }
     
     // Bottom disk (-Z face, normal pointing down, reversed winding)
-    GeometryBuffers bottom_disk = BuildDisk(num_slices);
+    GeometryAABB bottom_disk = BuildDisk(num_slices);
     uint32_t bottom_offset = static_cast<uint32_t>(result.vertices.size());
-    for (auto& v : bottom_disk.vertices) {
+    for (auto& v : bottom_disk.buffers.vertices) {
         v.position.z = -1.0f;
         v.normal.z = -1.0f;  // Normal points down
         result.vertices.push_back(v);
     }
     // Reverse winding for bottom face
-    for (size_t i = 0; i < bottom_disk.indices.size(); i += 3) {
-        result.indices.push_back(bottom_offset + bottom_disk.indices[i]);
-        result.indices.push_back(bottom_offset + bottom_disk.indices[i + 2]);
-        result.indices.push_back(bottom_offset + bottom_disk.indices[i + 1]);
+    for (size_t i = 0; i < bottom_disk.buffers.indices.size(); i += 3) {
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i]);
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 2]);
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 1]);
     }
     
-    return result;
+    return {result, aabb};
 }
 
 // Build ellipsoid: sphere with non-uniform scaling (handled by transform, but we build unit sphere)
-GeometryBuffers GeometryBuilder::BuildEllipsoid(int num_stacks, int num_slices) {
+GeometryAABB GeometryBuilder::BuildEllipsoid(int num_stacks, int num_slices) {
     // Ellipsoid is just a sphere - scaling is applied via transform matrix
     return BuildSphere(num_stacks, num_slices);
 }
 
-GeometryBuffers GeometryBuilder::BuildFromType(int geom_type, const mjModel* model) {
+GeometryAABB GeometryBuilder::BuildFromType(int geom_type, const mjModel* model) {
     const int num_quads = model->vis.quality.numquads;
     const int num_stacks = model->vis.quality.numstacks;
     const int num_slices = model->vis.quality.numslices;
@@ -581,15 +643,15 @@ GeometryBuffers GeometryBuilder::BuildFromType(int geom_type, const mjModel* mod
         case mjGEOM_LINEBOX:
             return GeometryBuilder::BuildLineBox();
         default:
-            return GeometryBuffers();
+            return GeometryAABB();
     }
 }
 
-GeometryBuffers GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
+    GeometryBuffer result;
 
     if (mesh_id < 0 || mesh_id >= model->nmesh) {
-        return result;
+        return {result, AABB{{0,0,0}, {0,0,0}}};
     }
 
     // 1. 获取所有数据块的起始地址
@@ -683,18 +745,18 @@ GeometryBuffers GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
         }
     }
 
-    return result;
+    return {result, ComputeAABB(result.vertices)};
 }
 
-GeometryBuffers GeometryBuilder::BuildConvexHull(const mjModel* model, int mesh_id) {
+GeometryAABB GeometryBuilder::BuildConvexHull(const mjModel* model, int mesh_id) {
     return BuildMesh(model, mesh_id);
 }
 
-GeometryBuffers GeometryBuilder::BuildHeightField(const mjModel* model, int hfield_id) {
-    GeometryBuffers result;
+GeometryAABB GeometryBuilder::BuildHeightField(const mjModel* model, int hfield_id) {
+    GeometryBuffer result;
     
     if (hfield_id < 0 || hfield_id >= model->nhfield) {
-        return result;
+        return {result, AABB{{0,0,0}, {0,0,0}}};
     }
     
     const int nrow = model->hfield_nrow[hfield_id];
@@ -734,7 +796,7 @@ GeometryBuffers GeometryBuilder::BuildHeightField(const mjModel* model, int hfie
         }
     }
     
-    return result;
+    return {result, ComputeAABB(result.vertices)};
 }
 
 }} // namespace mujoco::mjbatch

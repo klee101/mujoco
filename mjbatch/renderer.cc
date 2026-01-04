@@ -35,12 +35,80 @@ static RenderResult MakeError(RenderError e, const std::string &msg, int idx = -
     return r;
 }
 
-
 std::string glm_vec3_to_string(const glm::vec3& v) {
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(4) 
         << "(" << v.x << ", " << v.y << ", " << v.z << ")";
     return oss.str();
+}
+
+// Gribb-Hartmann Plane Extraction
+// Planes are stored as (nx, ny, nz, d) where dot(n, p) + d > 0 is inside.
+Frustum ExtractFrustum(const glm::mat4& viewProj) {
+    Frustum f;
+    const float* m = (const float*)&viewProj;
+
+    // Left
+    f.planes[0].x = m[3] + m[0];
+    f.planes[0].y = m[7] + m[4];
+    f.planes[0].z = m[11] + m[8];
+    f.planes[0].w = m[15] + m[12];
+
+    // Right
+    f.planes[1].x = m[3] - m[0];
+    f.planes[1].y = m[7] - m[4];
+    f.planes[1].z = m[11] - m[8];
+    f.planes[1].w = m[15] - m[12];
+
+    // Bottom
+    f.planes[2].x = m[3] + m[1];
+    f.planes[2].y = m[7] + m[5];
+    f.planes[2].z = m[11] + m[9];
+    f.planes[2].w = m[15] + m[13];
+
+    // Top
+    f.planes[3].x = m[3] - m[1];
+    f.planes[3].y = m[7] - m[5];
+    f.planes[3].z = m[11] - m[9];
+    f.planes[3].w = m[15] - m[13];
+
+    // Near
+    f.planes[4].x = m[3] + m[2];
+    f.planes[4].y = m[7] + m[6];
+    f.planes[4].z = m[11] + m[10];
+    f.planes[4].w = m[15] + m[14];
+
+    // Far
+    f.planes[5].x = m[3] - m[2];
+    f.planes[5].y = m[7] - m[6];
+    f.planes[5].z = m[11] - m[10];
+    f.planes[5].w = m[15] - m[14];
+
+    // Normalize planes (optional but recommended for correct distance check)
+    for (int i = 0; i < 6; i++) {
+        float length = glm::length(glm::vec3(f.planes[i]));
+        f.planes[i] /= length;
+    }
+
+    return f;
+}
+
+// Check if a World Space AABB is visible
+bool IsAABBVisible(const Frustum& frustum, const glm::vec3& min_p, const glm::vec3& max_p) {
+    // Check box against all 6 planes
+    for (int i = 0; i < 6; i++) {
+        // Find the point on the AABB furthest in the direction of the normal (n-vertex)
+        // If this point is behind the plane, the whole box is outside.
+        glm::vec3 p_n;
+        p_n.x = (frustum.planes[i].x > 0) ? max_p.x : min_p.x;
+        p_n.y = (frustum.planes[i].y > 0) ? max_p.y : min_p.y;
+        p_n.z = (frustum.planes[i].z > 0) ? max_p.z : min_p.z;
+
+        if (glm::dot(glm::vec3(frustum.planes[i]), p_n) + frustum.planes[i].w < 0) {
+            return false; // Outside
+        }
+    }
+    return true;
 }
 
 /*
@@ -129,6 +197,7 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
         global_index_buffer_ = std::move(other.global_index_buffer_);
         global_mesh_cache_ = std::move(other.global_mesh_cache_);
+        global_aabb_cache_ = std::move(other.global_aabb_cache_);
         last_stats_ = other.last_stats_;
         initialized_ = other.initialized_;
         frame_counter_ = other.frame_counter_;
@@ -446,13 +515,14 @@ void BatchRenderer::InitGlobalGeometry() {
 
     // ---  Lambda: cache the geometry ---
     // generator: return GeometryBuffers (vertex + index)
-    auto ProcessGeometry = [&](const std::string& unique_name, std::function<GeometryBuffers()> generator) {
+    auto ProcessGeometry = [&](const std::string& unique_name, std::function<GeometryAABB()> generator) {
         // Deduplication Check: 如果名字已存在，直接跳过
         if (global_mesh_cache_.find(unique_name) != global_mesh_cache_.end()) {
             return; 
         }
 
-        GeometryBuffers buffers = generator();
+        GeometryBuffer buffers = generator().buffers;
+        AABB aabb = generator().aabb;
 
         if (buffers.vertices.empty()) {
             LOG(config_, "Warning: Empty geometry generated for " + unique_name);
@@ -471,6 +541,7 @@ void BatchRenderer::InitGlobalGeometry() {
         global_indices.insert(global_indices.end(), buffers.indices.begin(), buffers.indices.end());
 
         global_mesh_cache_[unique_name] = entry;
+        global_aabb_cache_[unique_name] = aabb;
 
     };
 
@@ -499,7 +570,7 @@ void BatchRenderer::InitGlobalGeometry() {
     ProcessGeometry("__builtin_box",      [](){ return GeometryBuilder::BuildBox(24); });
     ProcessGeometry("__builtin_sphere",   [](){ return GeometryBuilder::BuildSphere(16, 16); }); // 16 stacks/slices
     ProcessGeometry("__builtin_capsule",  [](){ return GeometryBuilder::BuildCapsule(16, 16); });
-    ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(100, 100); });
+    ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(16, 16); });
     ProcessGeometry("__builtin_ellipsoid", [](){ return GeometryBuilder::BuildSphere(16, 16); }); // Reuse sphere
     ProcessGeometry("__builtin_plane",    [](){ return GeometryBuilder::BuildPlane(10); }); // Simple quad
 
@@ -661,6 +732,8 @@ bool BatchRenderer::Initialize() {
         mjv_defaultFreeCamera(models_[i], &res.camera);
         // Scene will be created in UpdateScenes when we have actual data
     }
+
+    camera_cull_info_.resize(config_.batch_size * SHM_NUM_CAMERAS);
 
     initialized_ = true;
     LOG(config_, "Initialize(): success");
@@ -1039,23 +1112,24 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
         
         for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
             int resource_idx = i * SHM_NUM_CAMERAS  + c;
-            // --- 1. Update Camera UBO ---
-            CameraUBO cam_ubo{};
-            
-            // Use Camera 0 (Left Eye / Main View) for rendering
-            // In Python we designated index 0 as 'frontview' or main view
+            // --- 1. Update Camera UBO --
             const ShmCamera& src_cam = slot.cameras[c]; 
 
-            // NOTE: here may cause some errors
-            cam_ubo.view_proj =
-                RowMajorToGLM(src_cam.proj) *
-                RowMajorToGLM(src_cam.view);
+            // Convert Row-Major to GLM Mat4
+            glm::mat4 view = RowMajorToGLM(src_cam.view);
+            glm::mat4 proj = RowMajorToGLM(src_cam.proj);
 
-            cam_ubo.position = glm::vec3(
-                src_cam.pos[0],
-                src_cam.pos[1],
-                src_cam.pos[2]
-            );
+            glm::mat4 view_proj = proj * view;
+            glm::vec3 cam_pos = glm::vec3(src_cam.pos[0], src_cam.pos[1], src_cam.pos[2]);
+
+            // --- SAVE INFO FOR CULLING ---
+            camera_cull_info_[resource_idx].view_proj = view_proj;
+            camera_cull_info_[resource_idx].pos = cam_pos;
+            camera_cull_info_[resource_idx].frustum = ExtractFrustum(view_proj);
+
+            CameraUBO cam_ubo{};
+            cam_ubo.view_proj = view_proj;
+            cam_ubo.position = cam_pos;
 
             std::memcpy(camera_staging_buffers_[resource_idx].ptr, &cam_ubo, sizeof(CameraUBO));
             camera_staging_buffers_[resource_idx].flush(dev);
@@ -1063,6 +1137,7 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             VkBufferCopy camCopy{};
             camCopy.size = sizeof(CameraUBO);
             dev.dt.cmdCopyBuffer(cmd, camera_staging_buffers_[resource_idx].buffer, camera_uniform_buffers_[resource_idx].buffer, 1, &camCopy);
+
 
             // --- 2. Update Light UBO (Headlamp Mode) ---
             // Since SHM has no lights, we create a light at the camera position
@@ -1112,11 +1187,20 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     Device &dev = *device_;
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
+    // --- STATISTICS COUNTERS ---
+    int total_instances = 0;
+    int drawn_instances = 0;
+    int culled_instances = 0;
+    // ---------------------------
+
     for (int i = 0; i < count; ++i) {
 
         const EnvRenderSlot& slot = slots[i];
         for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
             int resource_idx = i * SHM_NUM_CAMERAS + c;
+
+            // Retrieve Culling Info
+            const auto& cull_info = camera_cull_info_[resource_idx];
 
             VkCommandBuffer cmd = command_buffers_[resource_idx];
             // --- 1. Begin Recording & Render Pass ---
@@ -1162,6 +1246,8 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                 
                 for (int g = 0; g < active_geoms; ++g) {
                     const ShmGeom& geom = slot.geoms[g];
+
+                    total_instances++;
                     
                     // [A] Determine Mesh Name from Type/DataID
                     std::string mesh_name;
@@ -1189,6 +1275,11 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                     auto it = global_mesh_cache_.find(mesh_name);
                     if (it == global_mesh_cache_.end()) continue;
                     const MeshEntry& entry = it->second;
+
+                    auto it2 = global_aabb_cache_.find(mesh_name);
+                    if (it2 == global_aabb_cache_.end()) continue;
+                    const AABB& local_aabb = it2->second; // This is the AABB in Local Space (cached)
+
 
                     // [C] Construct Model Matrix
                     // SHM provides 3x3 Rotation (row-major 9 floats) and Pos (3 floats)
@@ -1224,6 +1315,40 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                         // Box, etc: Full 3D scale
                         model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], geom.size[2]));
                     }
+
+                    // --- CULLING LOGIC ---
+                    
+                    // 1. Calculate World Space AABB
+                    // Transform Center
+                    glm::vec3 local_center = (glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z) + 
+                                              glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z)) * 0.5f;
+                    glm::vec3 local_extent = (glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z) - 
+                                              glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z)) * 0.5f;
+                                              
+                    glm::vec3 world_center = glm::vec3(model_mat * glm::vec4(local_center, 1.0f));
+                    
+                    // Transform Extent (using absolute rotation matrix to bound the rotated box)
+                    glm::vec3 world_extent;
+                    for (int k = 0; k < 3; k++) {
+                        world_extent[k] = 
+                            std::abs(model_mat[0][k]) * local_extent.x +
+                            std::abs(model_mat[1][k]) * local_extent.y +
+                            std::abs(model_mat[2][k]) * local_extent.z;
+                    }
+
+                    glm::vec3 world_min = world_center - world_extent;
+                    glm::vec3 world_max = world_center + world_extent;
+
+                    // 2. Perform Frustum Check
+                    // 
+                    if (!IsAABBVisible(cull_info.frustum, world_min, world_max)) {
+                        culled_instances++; // Log: It was culled
+                        continue; // SKIP DRAW CALL
+                    }
+                    // ---------------------
+
+                    // If we get here, it will be drawn
+                    drawn_instances++;
                     
                     // [D] Push Constants
                     PushConstants pc{};
@@ -1234,7 +1359,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                     pc.shininess = geom.shininess;
                     pc.reflectance = geom.reflectance;
 
-                    // [MODIFIED] Texture Logic
+                    // [MODIFIED] Map matid -> texid -> global lookup
                     int resolved_tex_id = -1;
                     
                     // 1. Resolve matid -> texid
@@ -1278,6 +1403,18 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
             REQ_VK(dev.dt.endCommandBuffer(cmd));
         }
     }
+
+    // --- PRINT STATISTICS ---
+    // NOTE: This will print every time Record is called. For high FPS, consider wrapping this in a timer.
+    if (total_instances > 0) {
+        float cull_percentage = (static_cast<float>(culled_instances) / total_instances) * 100.0f;
+        std::cout << "[BatchRenderer] Culling Stats: "
+                  << "Total: " << total_instances << " | "
+                  << "Drawn: " << drawn_instances << " | "
+                  << "Culled: " << culled_instances << " ("
+                  << cull_percentage << "%)" << std::endl;
+    }
+    // ------------------------
     
     return true;
 }

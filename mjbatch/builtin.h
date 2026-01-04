@@ -43,14 +43,24 @@ struct Vertex {
 };
 
 // Geometry buffer structure containing raw vertex and index data
-struct GeometryBuffers {
+struct GeometryBuffer {
   std::vector<Vertex> vertices;
   std::vector<uint32_t> indices;  // Changed to uint32_t for better compatibility
-  
+
   size_t GetVertexCount() const { return vertices.size(); }
   size_t GetIndexCount() const { return indices.size(); }
   size_t GetVertexBufferSize() const { return vertices.size() * sizeof(Vertex); }
   size_t GetIndexBufferSize() const { return indices.size() * sizeof(uint32_t); }
+};
+
+struct AABB {
+  float3 min;
+  float3 max;
+};
+
+struct GeometryAABB {
+  GeometryBuffer buffers;
+  AABB aabb;
 };
 
 // ============================================================================
@@ -60,27 +70,27 @@ struct GeometryBuffers {
 class GeometryBuilder {
 public:
   // Build geometry from MuJoCo geometry type
-  static GeometryBuffers BuildFromType(int geom_type, const mjModel* model);
+  static GeometryAABB BuildFromType(int geom_type, const mjModel* model);
   
   // Build specific primitive shapes
-  static GeometryBuffers BuildLine();
-  static GeometryBuffers BuildPlane(int num_quads_per_axis = 10);
-  static GeometryBuffers BuildLineBox();
-  static GeometryBuffers BuildBox(int num_quads_per_axis = 10);
-  static GeometryBuffers BuildSphere(int num_stacks = 20, int num_slices = 20);
-  static GeometryBuffers BuildEllipsoid(int num_stacks = 20, int num_slices = 20);
-  static GeometryBuffers BuildCone(int num_stacks = 10, int num_slices = 20);
-  static GeometryBuffers BuildDisk(int num_slices = 20);
-  static GeometryBuffers BuildDome(int num_stacks = 10, int num_slices = 20);
-  static GeometryBuffers BuildTube(int num_stacks = 10, int num_slices = 20);
-  static GeometryBuffers BuildCylinder(int num_stacks = 10, int num_slices = 20);
-  static GeometryBuffers BuildCapsule(int num_stacks = 10, int num_slices = 20);
+  static GeometryAABB BuildLine();
+  static GeometryAABB BuildPlane(int num_quads_per_axis = 10);
+  static GeometryAABB BuildLineBox();
+  static GeometryAABB BuildBox(int num_quads_per_axis = 10);
+  static GeometryAABB BuildSphere(int num_stacks = 20, int num_slices = 20);
+  static GeometryAABB BuildEllipsoid(int num_stacks = 20, int num_slices = 20);
+  static GeometryAABB BuildCone(int num_stacks = 10, int num_slices = 20);
+  static GeometryAABB BuildDisk(int num_slices = 20);
+  static GeometryAABB BuildDome(int num_stacks = 10, int num_slices = 20);
+  static GeometryAABB BuildTube(int num_stacks = 10, int num_slices = 20);
+  static GeometryAABB BuildCylinder(int num_stacks = 10, int num_slices = 20);
+  static GeometryAABB BuildCapsule(int num_stacks = 10, int num_slices = 20);
   
   // Build mesh from MuJoCo mesh data
-  static GeometryBuffers BuildMesh(const mjModel* model, int mesh_id);
-  static GeometryBuffers BuildConvexHull(const mjModel* model, int mesh_id);
+  static GeometryAABB BuildMesh(const mjModel* model, int mesh_id);
+  static GeometryAABB BuildConvexHull(const mjModel* model, int mesh_id);
   // Build height field
-  static GeometryBuffers BuildHeightField(const mjModel* model, int hfield_id);
+  static GeometryAABB BuildHeightField(const mjModel* model, int hfield_id);
 
 private:
   // Helper functions

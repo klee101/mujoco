@@ -243,6 +243,19 @@ struct MeshEntry {
     uint32_t index_count;
 };
 
+struct Frustum {
+    glm::vec4 planes[6]; // Left, Right, Bottom, Top, Near, Far
+};
+
+
+// Add this struct to your BatchRenderer class header
+struct CameraCullInfo {
+    glm::mat4 view_proj;
+    Frustum frustum;
+    glm::vec3 pos;
+};
+
+
 /*
 * FrameObservation - Structure to hold per-frame image data
 */
@@ -323,13 +336,15 @@ private:
     bool RecordCommandBuffers(int count);
 
     /*
-    * UpdateScenesFromMemory - Update UBOs from shared memory
+    * UpdateScenesFromMemory - Update UBOs from shared memory created by Robosuite
     * NOTE: used to connect with Robosuite
+    * shared memory: (3 * camera + ngeoms + geoms[ngeoms]) * batch_size 
+    * TODO: now use default lighting, may need to extend to support light UBOs later
     */
     bool UpdateScenesFromMemory(const uint8_t* ptr, int batch_idx, int max_geom, int max_light);
 
     /*
-    * RecordCommandBuffersFromMemory - Record command buffers directly from SHM geoms
+    * RecordCommandBuffersFromMemory - Record command buffers directly from geoms in shared memory created by Robosuite
     * NOTE: used to connect with Robosuite
     * TODO: use a meta FrameBuffer to store the images 
     */
@@ -451,6 +466,7 @@ private:
     std::optional<mujoco::mjbatch::LocalBuffer> global_vertex_buffer_;
     std::optional<mujoco::mjbatch::LocalBuffer> global_index_buffer_;
     std::unordered_map<std::string, MeshEntry> global_mesh_cache_;
+    std::unordered_map<std::string, mujoco::mjbatch::AABB> global_aabb_cache_;
 
     // Uniform buffers
     std::vector<mujoco::mjbatch::LocalBuffer> camera_uniform_buffers_;
@@ -463,6 +479,8 @@ private:
     LoadedTextureResources material_textures_;
     VkSampler texture_sampler_;
     std::vector<int> texture_offsets_;
+
+    std::vector<CameraCullInfo> camera_cull_info_;
 
     // Output buffers
     std::vector<FrameObservation> frames;

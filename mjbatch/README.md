@@ -6,6 +6,7 @@
 #### 1\. Vulkan SDK 下载与配置
 
 下载 Vulkan SDK **1.4.328.1** 版本。
+wget https://sdk.lunarg.com/sdk/download/1.4.328.1/linux/vulkansdk-linux-x86_64-1.4.328.1.tar.xz
 
 **配置 `$HOME/.bashrc`：**
 将以下环境变量添加到您的 shell 配置文件（例如 `~/.bashrc`），然后运行 `source ~/.bashrc` 使其生效。
@@ -56,6 +57,7 @@ git submodule update --init --recursive
   * **重要设置：** 确保在配置时传入以下选项：
     ```
     -DGLFW_BUILD_WAYLAND=OFF
+    -DGLFW_BUILD_X11=OFF
     ```
 
 ### II. Benchmark 构建与编译
@@ -64,16 +66,18 @@ git submodule update --init --recursive
 
 #### 1\. CMake 配置项目
 
-在项目根目录（`/mujoco`）下执行以下命令进行 CMake 配置：
+在项目构建目录（`/build`）下执行以下命令进行 CMake 配置：
 
 ```bash
-cmake -S . -B build \
+cmake -S .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
     -DMUJOCO_ENABLE_AVX=ON \
     -DMUJOCO_ENABLE_AVX_INTRINSICS=ON \
     -DGLFW_BUILD_WAYLAND=OFF \
-    -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops"
+    -DGLFW_BUILD_X11=OFF \
+    -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops" \
+    -DPython3_EXECUTABLE=$(which python)
 
 cmake ..     -DPython3_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug
 ```

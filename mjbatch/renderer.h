@@ -52,6 +52,7 @@ const uint32_t C_RECORD = 0xFFFFA500; // Orange (Vulkan 指令录制)
 const uint32_t C_SUBMIT = 0xFF8A2BE2; // Blue Violet (提交与等待 GPU)
 const uint32_t C_READ   = 0xFF20B2AA; // Light Sea Green (回读数据)
 
+#define kMaxBindlessTextures 32
 
 class ThreadPool {
 public:
@@ -137,7 +138,7 @@ private:
     bool stop;
 };
 
-#define kMaxBindlessTextures 32
+
 // -----------------------------------------------------------------------------
 // Error Handling
 // -----------------------------------------------------------------------------
@@ -242,7 +243,9 @@ struct MeshEntry {
     uint32_t index_count;
 };
 
-// feat: zero-copy, direct return the staging buffer pointer
+/*
+* FrameObservation - Structure to hold per-frame image data
+*/
 struct FrameObservation {
     const uint8_t* data;      // Staging Buffer Pointer
     uint32_t width;           // image width
@@ -252,9 +255,9 @@ struct FrameObservation {
 };
 
 
-// -----------------------------------------------------------------------------
-// Main Batch Renderer Class
-// -----------------------------------------------------------------------------
+/*
+* BatchRenderer - Vulkan-based Batch Renderer for MuJoCo
+*/
 class BatchRenderer {
 public:
     static std::unique_ptr<BatchRenderer> Create(
@@ -267,18 +270,28 @@ public:
     BatchRenderer& operator=(const BatchRenderer&) = delete;
     BatchRenderer& operator=(BatchRenderer&&) noexcept;
 
-    // Core Rendering Interface
+    /*
+    * Render - core rendering function
+    * NOTE: now invalid when connected to Robosuite 
+    */
     RenderResult Render(mjData** data_array, const int* camera_ids = nullptr);
 
-    // [ADD] Shared Memory Interface (New)
-    bool UpdateScenesFromMemory(const uint8_t* ptr, int batch_idx, int max_geom, int max_light);
+
+    /*
+    * RenderFromMemory - Core rendering function from shared memory
+    * NOTE: used to connect with Robosuite
+    */
     RenderResult RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light);
-    bool RecordCommandBuffersFromMemory(const uint8_t* ptr, int count);
 
-    const std::vector<unsigned char>& GetRGBBuffer() const { return rgb_buffer_; }
-    const std::vector<float>& GetDepthBuffer() const { return depth_buffer_; }
-
+    /* GetRGBFrame - Get pointers to individual frames in the batch
+    *  zero-copy readback: directly return pointer to mapped staging buffer
+    *  NOTE: external interface to access per-frame image data
+    */
     const unsigned char* GetRGBFrame(int batch_idx) const;
+    /*
+    *  GetDepthFrame - Get pointers to individual frames in the batch
+    *  TODO: now depth data is not supported
+    */
     const float* GetDepthFrame(int batch_idx) const;
 
     const RenderStats& GetLastStats() const { return last_stats_; }
@@ -290,33 +303,98 @@ public:
 private:
     BatchRenderer(std::vector<mjModel*> models, const BatchRendererConfig& config);
 
+    /*
+    * Initialize - Set up Vulkan instance, device, render context, pipeline, framebuffers, buffers, etc.
+    * NOTE: only called once during creation
+    */
     bool Initialize();
     void Cleanup();
 
-    // Rendering stages
+    /*
+    * UpdateScenes - Update mjvScenes and prepare uniform buffers
+    * NOTE: now invalid when connected to Robosuite 
+    */ 
     bool UpdateScenes(mjData** data_array, int count);
 
+    /*
+    * RecordCommandBuffers - Record rendering commands into command buffers
+    * NOTE: now invalid when connected to Robosuite 
+    */ 
     bool RecordCommandBuffers(int count);
+
+    /*
+    * UpdateScenesFromMemory - Update UBOs from shared memory
+    * NOTE: used to connect with Robosuite
+    */
+    bool UpdateScenesFromMemory(const uint8_t* ptr, int batch_idx, int max_geom, int max_light);
+
+    /*
+    * RecordCommandBuffersFromMemory - Record command buffers directly from SHM geoms
+    * NOTE: used to connect with Robosuite
+    * TODO: use a meta FrameBuffer to store the images 
+    */
+    bool RecordCommandBuffersFromMemory(const uint8_t* ptr, int count);
+
+    /*
+    * SubmitAndWait - Submit all command buffers and wait for completion
+    * NOTE: shared logic for all render
+    */
     bool SubmitAndWait();
+
+    /*
+    * ReadbackResults - Read back rendered images to CPU
+    * NOTE: frames point to zero-copy staging buffer memory
+    * NOTE: frames stores all batch_size * num_cameras images
+    */
     bool ReadbackResults();
 
     // Vulkan resource management
     bool CreateVulkanInstance();
+
     bool SelectPhysicalDevice();
+
     bool CreateLogicalDevice();
+
     bool CreateRenderPass();
+
     bool CreatePipeline();
+
     bool CreateFramebuffers();
+
+    // TODO: Now the Material UBO actually invalid, use push constants instead,may need to optimize later
     bool CreateBuffers();
+
     void DestroyVulkanResources();
 
-    // Helper functions
+    /*
+    * LoadShaderModule - Load a SPIR-V shader module from file
+    * NOTE: now only support .spv files, so all files need to be precompiled
+    * TODO: add GLSL/HLSL source code support with runtime compilation
+    * TODO: add reflection support to auto-detect inputs/outputs
+    */
     VkShaderModule loadShaderModule(const std::string& shader_path);
+
+    /*
+    * LoadMaterialTextures - Load and upload all material textures from models
+    * 
+    * NOTE: Now it is only a simple version to test this feature
+    *       In the future, we may need to put this and the whole texture
+    *       System into RenderContext for better managements
+    * 
+    * NOTE: here all the texture will be store as a 2D texture 
+    *       which means that all the cube map will not only present to be duplicated 6 times
+    */
     LoadedTextureResources LoadMaterialTextures();
 
+    /*
+    * ReadSPIRV - Read SPIR-V binary from file
+    */
     std::vector<uint32_t> readSPIRV(const std::string& filename);
 
-    // feat: mesh deduplication
+    /*
+    * InitGlobalGeometry - Deduplicate and upload all geometry to GPU buffers
+    * NOTE: shared among all environments
+    */
     void InitGlobalGeometry();
 
 
@@ -388,9 +466,6 @@ private:
 
     // Output buffers
     std::vector<FrameObservation> frames;
-
-    std::vector<unsigned char> rgb_buffer_;
-    std::vector<float> depth_buffer_;
 
     RenderStats last_stats_;
     bool initialized_ = false;

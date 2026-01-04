@@ -43,6 +43,10 @@ std::string glm_vec3_to_string(const glm::vec3& v) {
     return oss.str();
 }
 
+/*
+* ResolveTextureFromMaterial - Given a material ID, find the associated texture ID
+* NOTE: Utility function to map material to texture when get Scenes info from Robosuite
+*/
 int ResolveTextureFromMaterial(const mjModel* m, int matid) {
     if (matid < 0 || matid >= m->nmat) return -1;
 
@@ -90,11 +94,6 @@ BatchRenderer::BatchRenderer(std::vector<mjModel*> models, const BatchRendererCo
 {
     // Reserve environment resources vector
     env_resources_.resize(config_.batch_size);
-    // Preallocate output buffers on CPU
-    rgb_buffer_.resize((size_t)config_.batch_size * config_.frame_width * config_.frame_height * 4);
-    if (config_.enable_depth) {
-        depth_buffer_.resize((size_t)config_.batch_size * config_.frame_width * config_.frame_height);
-    }
 
 }
 
@@ -130,8 +129,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
         global_index_buffer_ = std::move(other.global_index_buffer_);
         global_mesh_cache_ = std::move(other.global_mesh_cache_);
-        rgb_buffer_ = std::move(other.rgb_buffer_);
-        depth_buffer_ = std::move(other.depth_buffer_);
         last_stats_ = other.last_stats_;
         initialized_ = other.initialized_;
         frame_counter_ = other.frame_counter_;
@@ -149,7 +146,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
     return *this;
 }
 
-// --------------------------- Shader Loading ---------------------------------
 std::vector<uint32_t> BatchRenderer::readSPIRV(const std::string& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
     if (!file.is_open()) {
@@ -179,6 +175,10 @@ VkShaderModule BatchRenderer::loadShaderModule(const std::string& shader_path) {
     return shaderModule;
 }
 
+/*
+* GetExtractTextures - Extract texture data from mjModel
+* NOTE: now only support 2D textures, cube map will be treated as 2D with 6 times height
+*/
 static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
     std::vector<TextureInfo> tmpTextures_;
     tmpTextures_.reserve(model->ntex);
@@ -255,12 +255,7 @@ static std::vector<TextureInfo> GetExtractTextures(const mjModel* model) {
     }
     return tmpTextures_;
 }
-// --------------------------- Texture Loading ---------------------------------
-// NOTE: Now it is only a simple version to test this feature
-// In the future, we may need to put this and the whole texture
-// System into RenderContext for better managements
-// NOTE: here all the texture will be store as a 2D texture 
-// which means that all the cube map will not only present to be duplicated 6 times
+
 LoadedTextureResources BatchRenderer::LoadMaterialTextures()
 {
     LoadedTextureResources result;
@@ -435,7 +430,6 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
     return result;
 }
 
-// ---------------------------- Load and Deduplicate Vertices ------------------------
 void BatchRenderer::InitGlobalGeometry() {
     LOG(config_, "InitGlobalGeometry(): Starting mesh deduplication and upload...");
 
@@ -599,7 +593,6 @@ void BatchRenderer::InitGlobalGeometry() {
     
 }
 
-// --------------------------- Initialize / Cleanup ----------------------------
 bool BatchRenderer::Initialize() {
     LOG(config_, "Initialize(): starting");
 
@@ -703,14 +696,10 @@ void BatchRenderer::Cleanup() {
     device_.reset();
     backend_.reset();
 
-    rgb_buffer_.clear();
-    depth_buffer_.clear();
-
     initialized_ = false;
     LOG(config_, "Cleanup(): done");
 }
 
-// --------------------------- Public Render API -------------------------------
 RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     if (!initialized_) return MakeError(RenderError::INVALID_CONFIG, "Renderer not initialized");
     if (!data_array) return MakeError(RenderError::INVALID_DATA, "data_array is null");
@@ -772,7 +761,6 @@ RenderResult BatchRenderer::Render(mjData** data_array, const int* camera_ids) {
     return RenderResult(); // success
 }
 
-// --------------------------- Internal Stages ---------------------------------
 bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
     Device &dev = *device_;
 
@@ -873,7 +861,121 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
     return true;
 }
 
-// [MODIFIED] Implementation of RenderFromMemory
+bool BatchRenderer::RecordCommandBuffers(int count) {
+    Device &dev = *device_;
+    
+    for (int i = 0; i < count; ++i) {
+        VkCommandBuffer cmd = command_buffers_[i];
+        PerEnvResources &res = env_resources_[i];
+        
+        // --- 1. Begin Recording & Render Pass ---
+        // change: one time submit for better performance
+        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+        
+        VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+        renderPassInfo.renderPass = render_context_->renderPass;
+        renderPassInfo.framebuffer = framebuffers_[i];
+        renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
+        
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
+        clearValues[1].depthStencil = {1.0f, 0};
+        renderPassInfo.clearValueCount = clearValues.size();
+        renderPassInfo.pClearValues = clearValues.data();
+        
+        dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        
+        // --- 2. Bind Pipeline & Global State ---
+        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
+        
+        // Set dynamic state
+        VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+        VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+
+        // Bind Descriptor Sets (Camera/Light + Textures)
+        std::vector<VkDescriptorSet> sets = { descriptor_sets_[i], global_texture_descriptor_set };
+        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                     0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+        // --- 3. Bind Global Geometry Buffers  ---
+        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE && global_index_buffer_->buffer != VK_NULL_HANDLE) {
+            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+            // --- 4. Draw Loop ---
+            const auto& drawables = res.render_scene->GetDrawables();
+            
+            for (const auto& drawable : drawables) {
+                if (!drawable.visible) continue;
+
+                // [LOOKUP] Find geometry offsets in global cache
+                auto it = global_mesh_cache_.find(drawable.global_mesh_name);
+                if (it == global_mesh_cache_.end()) {
+                    LOG(config_, "Warning: Mesh not found in cache: " + drawable.global_mesh_name);
+                    continue;
+                }
+                const MeshEntry& entry = it->second;
+
+                // Setup Push Constants (Transform + Material + Texture)
+                PushConstants pushConstants{};
+                pushConstants.model = drawable.transform;
+                pushConstants.rgba = drawable.material.rgba;
+                pushConstants.specular = drawable.material.specular;
+                pushConstants.emission = drawable.material.emission;
+                pushConstants.shininess = drawable.material.shininess;
+                pushConstants.reflectance = drawable.material.reflectance;
+
+
+                // Texture Lookup Logic (Flat index + Cache lookup)
+                bool has_texture = (drawable.material.texture_id >= 0);
+
+                int current_model_tex_offset = 0;
+                if (i < texture_offsets_.size()) {
+                    current_model_tex_offset = texture_offsets_[i];
+                }
+                int global_tex_id = current_model_tex_offset + drawable.material.texture_id;
+
+                if (has_texture && global_tex_id < material_textures_.global_texture_lookup.size()) {
+                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
+                    pushConstants.texture_type = tex_map.type;
+                    pushConstants.texture_index = tex_map.index_in_array;
+                } else {
+                    pushConstants.texture_type = -1;
+                    pushConstants.texture_index = -1;
+                }
+
+                dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
+                                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                      0, sizeof(PushConstants), &pushConstants);
+
+                // [DRAW] 使用 Global Buffer 的偏移量
+                // indexCount: entry.index_count
+                // instanceCount: 1
+                // firstIndex: entry.index_offset (全局索引缓冲中的起始位置)
+                // vertexOffset: entry.vertex_offset (全局顶点缓冲中的起始位置，会被加到索引值上)
+                // firstInstance: 0
+                vkCmdDrawIndexed(cmd, 
+                               entry.index_count, 
+                               1, 
+                               entry.index_offset, 
+                               entry.vertex_offset, 
+                               0);
+            }
+        }
+
+        dev.dt.cmdEndRenderPass(cmd);
+        REQ_VK(dev.dt.endCommandBuffer(cmd));
+    }
+    
+    return true;
+}
+
 RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light) {
     if (!initialized_) return MakeError(RenderError::INVALID_CONFIG, "Renderer not initialized");
     
@@ -917,7 +1019,6 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
     return RenderResult();
 }
 
-// [MODIFIED] UpdateScenesFromMemory
 bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, int max_geom, int max_light) {
     Device &dev = *device_;
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
@@ -1007,7 +1108,6 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     return true;
 }
 
-// TODO: use a meta FrameBuffer to store the images 
 bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count) {
     Device &dev = *device_;
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
@@ -1182,123 +1282,6 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     return true;
 }
 
-
-bool BatchRenderer::RecordCommandBuffers(int count) {
-    Device &dev = *device_;
-    
-    for (int i = 0; i < count; ++i) {
-        VkCommandBuffer cmd = command_buffers_[i];
-        PerEnvResources &res = env_resources_[i];
-        
-        // --- 1. Begin Recording & Render Pass ---
-        // change: one time submit for better performance
-        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-        
-        VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        renderPassInfo.renderPass = render_context_->renderPass;
-        renderPassInfo.framebuffer = framebuffers_[i];
-        renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
-        
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-        clearValues[1].depthStencil = {1.0f, 0};
-        renderPassInfo.clearValueCount = clearValues.size();
-        renderPassInfo.pClearValues = clearValues.data();
-        
-        dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        
-        // --- 2. Bind Pipeline & Global State ---
-        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-        
-        // Set dynamic state
-        VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
-
-        // Bind Descriptor Sets (Camera/Light + Textures)
-        std::vector<VkDescriptorSet> sets = { descriptor_sets_[i], global_texture_descriptor_set };
-        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                     0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-
-        // --- 3. Bind Global Geometry Buffers  ---
-        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE && global_index_buffer_->buffer != VK_NULL_HANDLE) {
-            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            // --- 4. Draw Loop ---
-            const auto& drawables = res.render_scene->GetDrawables();
-            
-            for (const auto& drawable : drawables) {
-                if (!drawable.visible) continue;
-
-                // [LOOKUP] Find geometry offsets in global cache
-                auto it = global_mesh_cache_.find(drawable.global_mesh_name);
-                if (it == global_mesh_cache_.end()) {
-                    LOG(config_, "Warning: Mesh not found in cache: " + drawable.global_mesh_name);
-                    continue;
-                }
-                const MeshEntry& entry = it->second;
-
-                // Setup Push Constants (Transform + Material + Texture)
-                PushConstants pushConstants{};
-                pushConstants.model = drawable.transform;
-                pushConstants.rgba = drawable.material.rgba;
-                pushConstants.specular = drawable.material.specular;
-                pushConstants.emission = drawable.material.emission;
-                pushConstants.shininess = drawable.material.shininess;
-                pushConstants.reflectance = drawable.material.reflectance;
-
-
-                // Texture Lookup Logic (Flat index + Cache lookup)
-                bool has_texture = (drawable.material.texture_id >= 0);
-
-                int current_model_tex_offset = 0;
-                if (i < texture_offsets_.size()) {
-                    current_model_tex_offset = texture_offsets_[i];
-                }
-                int global_tex_id = current_model_tex_offset + drawable.material.texture_id;
-
-                if (has_texture && global_tex_id < material_textures_.global_texture_lookup.size()) {
-                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                    pushConstants.texture_type = tex_map.type;
-                    pushConstants.texture_index = tex_map.index_in_array;
-                } else {
-                    pushConstants.texture_type = -1;
-                    pushConstants.texture_index = -1;
-                }
-
-                dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                      0, sizeof(PushConstants), &pushConstants);
-
-                // [DRAW] 使用 Global Buffer 的偏移量
-                // indexCount: entry.index_count
-                // instanceCount: 1
-                // firstIndex: entry.index_offset (全局索引缓冲中的起始位置)
-                // vertexOffset: entry.vertex_offset (全局顶点缓冲中的起始位置，会被加到索引值上)
-                // firstInstance: 0
-                vkCmdDrawIndexed(cmd, 
-                               entry.index_count, 
-                               1, 
-                               entry.index_offset, 
-                               entry.vertex_offset, 
-                               0);
-            }
-        }
-
-        dev.dt.cmdEndRenderPass(cmd);
-        REQ_VK(dev.dt.endCommandBuffer(cmd));
-    }
-    
-    return true;
-}
-
-
 bool BatchRenderer::SubmitAndWait() {
     Device &dev = *device_;
     VkQueue queue = render_context_->renderQueue;
@@ -1418,7 +1401,6 @@ bool BatchRenderer::ReadbackResults() {
     // --- 4. Wait for GPU  ---
     {
         ScopedNvtxRange range("GPU_Readback_Wait", 0xFF808080);
-        // 这一步之后，Staging Buffer 的内容在物理内存中已经是新的了
         waitForFenceInfinitely(dev, render_context_->load_fence_);
     }
 
@@ -1804,7 +1786,6 @@ bool BatchRenderer::CreateFramebuffers() {
     return true;
 }
 
-// TODO: Now the Material UBO actually invalid, use push constants instead,may need to optimize later
 bool BatchRenderer::CreateBuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
@@ -2097,8 +2078,6 @@ void BatchRenderer::DestroyVulkanResources() {
     LOG(config_, "DestroyVulkanResources(): resources released");
 }
 
-// --------------------------- Simple accessors --------------------------------
-// zero-copy readback: directly return pointer to mapped staging buffer
 const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {
     if (batch_idx < 0 || batch_idx >= (int)frames.size()) {
         return nullptr;
@@ -2106,13 +2085,8 @@ const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {
     return frames[batch_idx].data;
 }
 
-// TODO: this func is now invalid because we do zero-copy readback
-// now depth data is not used, may optimize later
 const float* BatchRenderer::GetDepthFrame(int batch_idx) const {
-    if (!config_.enable_depth) return nullptr;
-    if (batch_idx < 0 || batch_idx >= config_.batch_size) return nullptr;
-    size_t stride = (size_t)config_.frame_width * config_.frame_height;
-    return depth_buffer_.data() + (size_t)batch_idx * stride;
+    return nullptr;
 }
 
 

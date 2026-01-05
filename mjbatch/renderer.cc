@@ -570,7 +570,7 @@ void BatchRenderer::InitGlobalGeometry() {
     ProcessGeometry("__builtin_box",      [](){ return GeometryBuilder::BuildBox(24); });
     ProcessGeometry("__builtin_sphere",   [](){ return GeometryBuilder::BuildSphere(16, 16); }); // 16 stacks/slices
     ProcessGeometry("__builtin_capsule",  [](){ return GeometryBuilder::BuildCapsule(16, 16); });
-    ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(16, 16); });
+    ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(32, 64); });
     ProcessGeometry("__builtin_ellipsoid", [](){ return GeometryBuilder::BuildSphere(16, 16); }); // Reuse sphere
     ProcessGeometry("__builtin_plane",    [](){ return GeometryBuilder::BuildPlane(10); }); // Simple quad
 
@@ -722,6 +722,7 @@ bool BatchRenderer::Initialize() {
     }
 
     // Initialize per-environment MuJoCo visualization structs
+    // NOTE: when render from shared memory, here the mjvScene are not used
     for (int i = 0; i < config_.batch_size; ++i) {
         PerEnvResources &res = env_resources_[i];
         mjv_defaultCamera(&res.camera);
@@ -1109,6 +1110,34 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
 
     for(int i = 0; i < config_.batch_size; ++i) {
         const EnvRenderSlot& slot = slots[i];
+
+        // --- 1. Prepare Light Data (Shared for all 3 cameras in this Env) ---
+        LightUBO env_light_ubo{};
+        env_light_ubo.lightCount = slot.num_lights;
+
+        // Safety clamp just in case shared memory has garbage data
+        if (env_light_ubo.lightCount > 10) env_light_ubo.lightCount = 10;
+
+        for (int l = 0; l < env_light_ubo.lightCount; ++l) {
+            const ShmLight& src = slot.lights[l];
+            auto& dst = env_light_ubo.lights[l];
+
+            // Direct mapping from Shared Memory struct to UBO struct
+            dst.position    = glm::vec3(src.pos[0], src.pos[1], src.pos[2]);
+            dst.direction   = glm::vec3(src.dir[0], src.dir[1], src.dir[2]);
+            
+            // Attenuation: x=Constant, y=Linear, z=Quadratic
+            dst.attenuation = glm::vec3(src.attenuation[0], src.attenuation[1], src.attenuation[2]);
+            dst.exponent    = src.exponent;
+            dst.cutoff      = src.cutoff;
+            
+            dst.ambient     = glm::vec3(src.ambient[0], src.ambient[1], src.ambient[2]);
+            dst.diffuse     = glm::vec3(src.diffuse[0], src.diffuse[1], src.diffuse[2]);
+            dst.specular    = glm::vec3(src.specular[0], src.specular[1], src.specular[2]);
+            
+            dst.castShadow  = (uint32_t)src.castshadow;
+            dst.type = src.type;
+        }
         
         for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
             int resource_idx = i * SHM_NUM_CAMERAS  + c;
@@ -1139,29 +1168,8 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             dev.dt.cmdCopyBuffer(cmd, camera_staging_buffers_[resource_idx].buffer, camera_uniform_buffers_[resource_idx].buffer, 1, &camCopy);
 
 
-            // --- 2. Update Light UBO (Headlamp Mode) ---
-            // Since SHM has no lights, we create a light at the camera position
-            LightUBO light_ubo{};
-            light_ubo.lightCount = 1;
-            
-            // Light 0
-            light_ubo.lights[0].position[0] = src_cam.pos[0];
-            light_ubo.lights[0].position[1] = src_cam.pos[1];
-            light_ubo.lights[0].position[2] = src_cam.pos[2];
-            
-            light_ubo.lights[0].diffuse[0] = 0.8f; 
-            light_ubo.lights[0].diffuse[1] = 0.8f; 
-            light_ubo.lights[0].diffuse[2] = 0.8f;
-            
-            light_ubo.lights[0].specular[0] = 0.5f; 
-            light_ubo.lights[0].specular[1] = 0.5f; 
-            light_ubo.lights[0].specular[2] = 0.5f;
-            
-            light_ubo.lights[0].attenuation[0] = 1.0f; // Constant
-            light_ubo.lights[0].attenuation[1] = 0.0f; // Linear
-            light_ubo.lights[0].attenuation[2] = 0.0f; // Quadratic
-
-            std::memcpy(light_staging_buffers_[resource_idx].ptr, &light_ubo, sizeof(LightUBO));
+            // --- Light UBO Update (Copy the env_light_ubo we made earlier) ---
+            std::memcpy(light_staging_buffers_[resource_idx].ptr, &env_light_ubo, sizeof(LightUBO));
             light_staging_buffers_[resource_idx].flush(dev);
 
             VkBufferCopy lightCopy{};
@@ -1406,14 +1414,14 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
 
     // --- PRINT STATISTICS ---
     // NOTE: This will print every time Record is called. For high FPS, consider wrapping this in a timer.
-    if (total_instances > 0) {
-        float cull_percentage = (static_cast<float>(culled_instances) / total_instances) * 100.0f;
-        std::cout << "[BatchRenderer] Culling Stats: "
-                  << "Total: " << total_instances << " | "
-                  << "Drawn: " << drawn_instances << " | "
-                  << "Culled: " << culled_instances << " ("
-                  << cull_percentage << "%)" << std::endl;
-    }
+    // if (total_instances > 0) {
+    //     float cull_percentage = (static_cast<float>(culled_instances) / total_instances) * 100.0f;
+    //     std::cout << "[BatchRenderer] Culling Stats: "
+    //               << "Total: " << total_instances << " | "
+    //               << "Drawn: " << drawn_instances << " | "
+    //               << "Culled: " << culled_instances << " ("
+    //               << cull_percentage << "%)" << std::endl;
+    // }
     // ------------------------
     
     return true;

@@ -5,7 +5,7 @@
 cbuffer CameraData : register(b0, space0) {
     float4x4 view_proj;
     float3 camera_position;
-    float padding; // Padding to align to 16 bytes
+    float padding;
 };
 
 struct LightInfo {
@@ -24,15 +24,13 @@ struct LightInfo {
     float3 specular;
     float bulbRadius;
     
-    float3 attenuation; // x: constant, y: linear, z: quadratic
+    float3 attenuation; 
     float intensity;    
 
     uint castShadow;
     float padding[3]; 
 };
 
-// Even if we don't use the input data, we MUST keep the definition
-// so the C++ Descriptor Set binding doesn't crash.
 cbuffer LightData : register(b1, space0) {
     LightInfo input_lights[10];
     uint input_lightCount;
@@ -48,7 +46,7 @@ struct PushConstants {
     float material_reflectance;
     
     int texture_index;
-    int texture_type;  // -1: Unlit/Color, 0: 2D Texture, 1: Cube Texture
+    int texture_type;
     int padding[2];
 };
 
@@ -74,13 +72,6 @@ struct PSInput {
 // ============================================================================
 // DEBUG MODES
 // ============================================================================
-// 0: Off (Final Render)
-// 1: Normals
-// 2: Reflectance Heatmap
-// 3: Lighting Only (White Material)
-// 4: Specular Only
-// 5: UV Coords
-
 #ifndef DEBUG_VIEW
   #define DEBUG_VIEW 0
 #endif
@@ -105,23 +96,24 @@ float3 ACESToneMapping(float3 color) {
     return saturate((color * (A * color + B)) / (color * (C * color + D) + E));
 }
 
-// Manually calculate Cube Map UVs for 2D Texture Arrays
-float2 CalculateCubeUV(float3 v) {
-    float3 vAbs = abs(v);
-    float ma;
-    float2 uv;
+// [NEW] Spherical Equirectangular Mapping
+// Maps a 3D vector to a 2D texture coordinate smoothly (like a world map)
+float2 CalculateSphericalUV(float3 v) {
+    // 1. Calculate the angle in the XZ plane (Horizontal)
+    // atan2(x, z) returns range [-PI, PI]
+    float phi = atan2(v.x, v.z); 
     
-    if(vAbs.z >= vAbs.x && vAbs.z >= vAbs.y) {
-        ma = vAbs.z;
-        uv = float2(v.x, -v.y); 
-    } else if(vAbs.y >= vAbs.x) {
-        ma = vAbs.y;
-        uv = float2(v.x, v.z);
-    } else {
-        ma = vAbs.x;
-        uv = float2(v.z, -v.y);
-    }
-    return (uv / ma) * 0.5 + 0.5;
+    // 2. Calculate the elevation angle (Vertical)
+    // asin(y) returns range [-PI/2, PI/2] (Assuming normalized v)
+    float theta = asin(clamp(v.y, -1.0, 1.0));
+
+    // 3. Map to [0, 1] UV space
+    const float PI = 3.14159265359;
+    float u = (phi / (2.0 * PI)) + 0.5;
+    float v_coord = (theta / PI) + 0.5; 
+
+    // Optional: Flip V if texture is upside down
+    return float2(u, 1.0 - v_coord); 
 }
 
 // ============================================================================
@@ -133,7 +125,7 @@ void CalculateLightContribution(
     float3 N,           // Normal
     float3 V,           // View Dir
     float3 matDiffuse,  // Base Color
-    float matSpecular, // Specular Color
+    float matSpecular,  // Specular Color
     float matShininess, // Shininess
     float matReflectance, 
     inout float3 outDiffuse,
@@ -144,6 +136,8 @@ void CalculateLightContribution(
     float attenuation = 1.0;
 
     // --- Light Vector Setup ---
+    // Note: MuJoCo directional lights have 'direction' pointing along the light ray.
+    // For lighting calculations, L needs to point TOWARDS the light source.
     if (light.type == 1) { // Directional
         L = normalize(-light.direction);
     } else { // Point or Spot
@@ -188,8 +182,7 @@ void CalculateLightContribution(
         float specIntensity = matSpecular * specPower * fresnel * attenuation;
         
         outSpecular += light.specular * specIntensity;
-}
-
+    }
 }
 
 // ============================================================================
@@ -199,25 +192,24 @@ float4 PSMain(PSInput input) : SV_Target {
     // 1. Prepare Geometry Vectors
     float3 N = normalize(input.normal);
     float3 V = normalize(input.view_dir);
-    // Optional: Double-sided fix
-    // if (dot(N, V) < 0) N = -N; 
 
     // 2. Prepare Material Color (Base Color * Texture)
     float4 base_color = pushConst.material_rgba * input.color;
     
-    // Texture Logic (NonUniformResourceIndex handles bindless arrays safely)
+    // Texture Logic
     if (pushConst.texture_index >= 0) {
         float4 texColor = float4(1,1,1,1);
         
-        if (pushConst.texture_type == 0) { 
-            // 2D Texture
+        if (pushConst.texture_type == 0) { // 2D Texture
             texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, input.texcoord);
         } 
-        else if (pushConst.texture_type == 1) { 
-            // Simulated Cube Map
+        else if (pushConst.texture_type == 1) { // Simulated Environment Map
             float3 uvw = normalize(input.sample_vec);
-            float2 cube_uv = CalculateCubeUV(uvw);
-            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, cube_uv);
+            
+            // [CHANGE] Use Spherical instead of Cube to fix the "Prism" look
+            float2 spherical_uv = CalculateSphericalUV(uvw);
+            
+            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, spherical_uv);
         }
         
         base_color *= texColor;
@@ -229,57 +221,29 @@ float4 PSMain(PSInput input) : SV_Target {
     float3 totalAmbient = float3(0, 0, 0);
 
     // ========================================================================
-    // [LOGIC] DEFAULT STUDIO LIGHTING SETUP
-    // Ignores input_lights[] from UBO entirely.
+    // [UPDATED] DYNAMIC LIGHTING LOOP
+    // Iterates through the UBO data populated by Shared Memory
     // ========================================================================
     
-    // Light 1: Key Light (Warm Sun from Top-Right)
-    LightInfo keyLight;
-    keyLight.type = 1; // Directional
-    keyLight.direction = normalize(float3(-1.0, -2.0, -1.0)); // Coming from Top-Right-Front
-    keyLight.diffuse = float3(1.0, 0.95, 0.9); // Warm Light
-    keyLight.specular = float3(1.0, 1.0, 1.0);
-    keyLight.ambient = float3(0.05, 0.05, 0.08); // Slight blue ambient
-    keyLight.attenuation = float3(1,0,0); // Unused for Directional
-    keyLight.position = float3(0,0,0);
-    keyLight.range = 0;
-    keyLight.cutoff = 0;
-    keyLight.exponent = 0;
-    keyLight.bulbRadius = 0;
-    keyLight.intensity = 1.0;
-    keyLight.castShadow = 0;
+    // Clamp to max 10 to prevent infinite loops if memory is garbage
+    uint safeLightCount = min(input_lightCount, 10);
 
-    CalculateLightContribution(
-        keyLight, input.world_pos, N, V, 
-        base_color.rgb, 
-        pushConst.material_specular, 
-        pushConst.material_shininess, 
-        pushConst.material_reflectance,
-        totalDiffuse, totalSpecular, totalAmbient
-    );
-
-    // Light 2: Fill Light (Headlight / Camera Light)
-    // Ensures nothing is ever pitch black by lighting from the view direction
-    LightInfo fillLight;
-    fillLight.type = 1; // Directional
-    fillLight.direction = -V; // Parallel to View Direction (Headlight)
-    fillLight.diffuse = float3(0.3, 0.3, 0.35); // Cool, dimmer light
-    fillLight.specular = float3(0.2, 0.2, 0.2);
-    fillLight.ambient = float3(0.0, 0.0, 0.0); // Ambient handled by Key Light
-    fillLight.attenuation = float3(1,0,0);
-    // Fill dummy values for struct
-    fillLight.position = float3(0,0,0);
-    fillLight.range = 0; fillLight.cutoff = 0; fillLight.exponent = 0;
-    fillLight.bulbRadius = 0; fillLight.intensity = 1.0; fillLight.castShadow = 0;
-
-    CalculateLightContribution(
-        fillLight, input.world_pos, N, V, 
-        base_color.rgb, 
-        pushConst.material_specular, 
-        pushConst.material_shininess, 
-        pushConst.material_reflectance,
-        totalDiffuse, totalSpecular, totalAmbient
-    );
+    for(uint i = 0; i < safeLightCount; ++i)
+    {
+        CalculateLightContribution(
+            input_lights[i], 
+            input.world_pos, 
+            N, 
+            V, 
+            base_color.rgb, 
+            pushConst.material_specular, 
+            pushConst.material_shininess, 
+            pushConst.material_reflectance,
+            totalDiffuse, 
+            totalSpecular, 
+            totalAmbient
+        );
+    }
 
     // 4. Combine Lighting
     float3 final_color = totalAmbient + totalDiffuse + totalSpecular;
@@ -295,8 +259,7 @@ float4 PSMain(PSInput input) : SV_Target {
     #elif DEBUG_VIEW == 2
         return float4(HeatMap(pushConst.material_reflectance), 1.0); // Reflectance
     #elif DEBUG_VIEW == 3
-        // Diffuse Lighting Only (Grey Clay Mode)
-        return float4(totalDiffuse + totalAmbient, 1.0);
+        return float4(totalDiffuse + totalAmbient, 1.0); // Diffuse Only
     #elif DEBUG_VIEW == 4
         return float4(totalSpecular, 1.0); // Specular Only
     #elif DEBUG_VIEW == 5

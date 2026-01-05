@@ -484,36 +484,58 @@ GeometryAABB GeometryBuilder::BuildDome(int num_stacks, int num_slices) {
 
 GeometryAABB GeometryBuilder::BuildTube(int num_stacks, int num_slices) {
     GeometryBuffer result;
-    // Cylinder without caps: Z from -1 to 1, Radius 1
+    // Radius 1, Z from -1 to 1
     AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
 
     const float delta_angle = 2.0f * M_PI / static_cast<float>(num_slices);
     const float delta_z = 2.0f / static_cast<float>(num_stacks);
-    
-    for (int i = 0; i < num_slices; ++i) {
+
+    // FIXED: Iterate <= num_slices to create a duplicate vertex row at the seam
+    // This allows UVs to go from 0 to 1 cleanly.
+    for (int i = 0; i <= num_slices; ++i) {
         const float angle = static_cast<float>(i) * delta_angle;
-        const float3 normal{std::cos(angle), std::sin(angle), 0};
         
+        // Note: For a tube, normals point outward (cos, sin, 0)
+        const float3 normal{std::cos(angle), std::sin(angle), 0};
+
         for (int j = 0; j <= num_stacks; ++j) {
             const float z = -1.0f + (static_cast<float>(j) * delta_z);
+            
+            // Position matches Normal (Radius = 1) for X and Y
             const float3 pos{normal.x, normal.y, z};
+
             result.vertices.push_back(Vertex(
-                pos, normal,
+                pos, 
+                normal,
+                // U goes from 0.0 to 1.0. 
+                // When i = num_slices, U = 1.0 (Seam fixed)
                 {static_cast<float>(i) / num_slices, static_cast<float>(j) / num_stacks},
                 {1, 1, 1, 1}
             ));
         }
     }
-    
+
+    // Indices generation
+    // We loop < num_slices because we are connecting strip i to strip i+1
     for (int i = 0; i < num_slices; ++i) {
         for (int j = 0; j < num_stacks; ++j) {
-            const int base = i * (num_stacks + 1) + j;
-            const int next_i = (i + 1) % num_slices;
-            const int next_base = next_i * (num_stacks + 1) + j;
-            AppendQuadToVector(result.indices,
-                base, next_base, next_base + 1, base + 1);        }
+            // Because we have (num_stacks + 1) vertices per column
+            const int stride = num_stacks + 1;
+            
+            const int base = i * stride + j;
+            const int next_base = (i + 1) * stride + j; // No modulo needed now
+
+            // Standard Quad triangulation
+            result.indices.push_back(base);
+            result.indices.push_back(next_base);
+            result.indices.push_back(next_base + 1);
+
+            result.indices.push_back(base);
+            result.indices.push_back(next_base + 1);
+            result.indices.push_back(base + 1);
+        }
     }
-    
+
     return {result, aabb};
 }
 
@@ -570,47 +592,47 @@ GeometryAABB GeometryBuilder::BuildCapsule(int num_stacks, int num_slices) {
     return {result, aabb};
 }
 
-// FIXED: BuildCylinder with proper disk orientation
 GeometryAABB GeometryBuilder::BuildCylinder(int num_stacks, int num_slices) {
     GeometryBuffer result;
-    // Cylinder is Radius 1, Z from -1 to 1
     AABB aabb = { {-1, -1, -1}, {1, 1, 1} };
-    
-    // Build tube
+
+    // 1. Build the side walls (Tube)
     GeometryAABB tube = BuildTube(num_stacks, num_slices);
-    for (const auto& v : tube.buffers.vertices) {
-        result.vertices.push_back(v);
-    }
-    for (uint32_t idx : tube.buffers.indices) {
-        result.indices.push_back(idx);
-    }
-    
-    // Top disk (+Z face, normal pointing up)
+    result.vertices = std::move(tube.buffers.vertices);
+    result.indices = std::move(tube.buffers.indices);
+
+    // 2. Build Top Disk (+Z)
+    // Vertices must be duplicated here because the Normal is different (0,0,1) vs (x,y,0)
+    // This creates a "hard edge" which is correct for a cylinder.
     GeometryAABB top_disk = BuildDisk(num_slices);
     uint32_t top_offset = static_cast<uint32_t>(result.vertices.size());
+    
     for (auto& v : top_disk.buffers.vertices) {
-        v.position.z = 1.0f;
+        v.position.z = 1.0f; // Move disk to top
+        // Normal is already {0,0,1} from BuildDisk
         result.vertices.push_back(v);
     }
     for (uint32_t idx : top_disk.buffers.indices) {
         result.indices.push_back(top_offset + idx);
     }
-    
-    // Bottom disk (-Z face, normal pointing down, reversed winding)
+
+    // 3. Build Bottom Disk (-Z)
     GeometryAABB bottom_disk = BuildDisk(num_slices);
     uint32_t bottom_offset = static_cast<uint32_t>(result.vertices.size());
+    
     for (auto& v : bottom_disk.buffers.vertices) {
-        v.position.z = -1.0f;
-        v.normal.z = -1.0f;  // Normal points down
+        v.position.z = -1.0f; // Move disk to bottom
+        v.normal = {0, 0, -1}; // Flip normal to point down
         result.vertices.push_back(v);
     }
-    // Reverse winding for bottom face
-    for (size_t i = 0; i < bottom_disk.buffers.indices.size(); i += 3) {
-        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i]);
-        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 2]);
-        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 1]);
-    }
     
+    // Reverse winding for bottom face so it faces outward (down)
+    for (size_t i = 0; i < bottom_disk.buffers.indices.size(); i += 3) {
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i]);     // 0
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 2]); // 2 (Swap)
+        result.indices.push_back(bottom_offset + bottom_disk.buffers.indices[i + 1]); // 1 (Swap)
+    }
+
     return {result, aabb};
 }
 

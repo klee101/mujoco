@@ -83,7 +83,7 @@ struct LightInfo {
     float intensity;
     
     uint32_t castShadow;
-    float padding[3];  // 调整为2个float来补齐
+    float padding[3];  // 调整为3个float来补齐
     
     // 转换函数
     static LightInfo fromMjvLight(const mjvLight& mjLight) {

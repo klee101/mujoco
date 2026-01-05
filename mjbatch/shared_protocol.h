@@ -24,6 +24,19 @@ struct ShmCamera {
     float pos[3];     // 3
 };
 
+struct ShmLight {
+    int32_t type;
+    float pos[3];
+    float dir[3];
+    float attenuation[3];
+    float cutoff;
+    float exponent;
+    float ambient[3];
+    float diffuse[3];
+    float specular[3];
+    int32_t castshadow;
+};
+
 struct ShmGeom {
     // Integer IDs
     int32_t type;
@@ -51,9 +64,14 @@ struct ShmGeom {
 // Defined Constants based on Python config
 #define SHM_MAX_GEOMS 1000 
 #define SHM_NUM_CAMERAS 3
+#define SHM_MAX_LIGHTS 10
 
 struct EnvRenderSlot {
     ShmCamera cameras[SHM_NUM_CAMERAS];
+    
+    int32_t num_lights;
+    ShmLight lights[SHM_MAX_LIGHTS];
+
     int32_t num_geoms;
     ShmGeom geoms[SHM_MAX_GEOMS];
 };

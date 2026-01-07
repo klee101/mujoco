@@ -42,6 +42,7 @@ struct ScopedNvtxRange {
         nvtxRangePop();
     }
 };
+#define kMaxBindlessTextures 32
 
 const uint32_t COLOR_PHYSICS = 0xFF00FF00; // 绿色
 const uint32_t COLOR_RENDER  = 0xFFFF0000; // 红色
@@ -52,7 +53,8 @@ const uint32_t C_RECORD = 0xFFFFA500; // Orange (Vulkan 指令录制)
 const uint32_t C_SUBMIT = 0xFF8A2BE2; // Blue Violet (提交与等待 GPU)
 const uint32_t C_READ   = 0xFF20B2AA; // Light Sea Green (回读数据)
 
-#define kMaxBindlessTextures 32
+
+static const uint32_t SHADOW_MAP_DIM = 2048;
 
 class ThreadPool {
 public:
@@ -236,6 +238,10 @@ struct PushConstants {
     int pad[2];               // Padding to 16 bytes
 };
 
+struct PushConstantsShadow {
+    glm::mat4 mvp;          // 64 bytes
+};
+
 struct MeshEntry {
     uint32_t vertex_offset;
     uint32_t index_offset;
@@ -379,6 +385,10 @@ private:
     // TODO: Now the Material UBO actually invalid, use push constants instead,may need to optimize later
     bool CreateBuffers();
 
+    bool CreateShadowResources();
+
+    bool CreateShadowPipeline();
+
     void DestroyVulkanResources();
 
     /*
@@ -432,8 +442,13 @@ private:
     std::vector<PerEnvResources> env_resources_;
 
     // Vulkan resources
+    VkCommandBuffer command_buffer_;
+    VkCommandPool command_pool_ = VK_NULL_HANDLE;
+
     VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+
+    VkPipeline shadow_pipeline_ = VK_NULL_HANDLE;
 
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
@@ -455,9 +470,12 @@ private:
     std::vector<VkImageView> color_image_views_;
     std::vector<VkImageView> depth_image_views_;
 
-    // Command buffers and synchronization
-    VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> command_buffers_;
+    // [ADD] Shadow map resources
+    std::vector<VkFramebuffer> shadow_framebuffers_;
+    std::vector<mujoco::mjbatch::LocalImage> shadow_images_;
+    std::vector<VkImageView> shadow_image_views_;
+    VkSampler shadow_sampler_;
+
     VkFence render_fence_;
 
     // Staging buffers for readback
@@ -481,6 +499,8 @@ private:
     std::vector<int> texture_offsets_;
 
     std::vector<CameraCullInfo> camera_cull_info_;
+
+    std::vector<glm::mat4> cached_shadow_matrices_; // 大小 = total_slots
 
     // Output buffers
     std::vector<FrameObservation> frames;

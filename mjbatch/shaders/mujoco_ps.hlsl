@@ -29,6 +29,8 @@ struct LightInfo {
 
     uint castShadow;
     float padding[3]; 
+
+    float4x4 view_proj;
 };
 
 cbuffer LightData : register(b1, space0) {
@@ -59,6 +61,9 @@ ConstantBuffer<PushConstants> pushConst;
 Texture2D g_textures[] : register(t0, space1);
 SamplerState g_sampler : register(s1, space1);
 
+Texture2D g_shadowMap : register(t2, space0);
+SamplerState g_shadowSampler : register(s2, space0);
+
 struct PSInput {
     float4 position : SV_Position;
     float3 normal : NORMAL;
@@ -67,6 +72,7 @@ struct PSInput {
     float3 world_pos : WORLD_POS;
     float3 view_dir : VIEW_DIR;
     float3 sample_vec : SAMPLE_VEC;
+    float4 shadow_coord : SHADOW_COORD;
 };
 
 // ============================================================================
@@ -130,7 +136,8 @@ void CalculateLightContribution(
     float matReflectance, 
     inout float3 outDiffuse,
     inout float3 outSpecular,
-    inout float3 outAmbient
+    inout float3 outAmbient,
+    float visibility
 ) {
     float3 L;
     float attenuation = 1.0;
@@ -161,7 +168,7 @@ void CalculateLightContribution(
 
     // --- Diffuse ---
     float NdotL = max(dot(N, L), 0.0);
-    outDiffuse += light.diffuse * matDiffuse * NdotL * attenuation;
+    outDiffuse += light.diffuse * matDiffuse * NdotL * attenuation * visibility;
 
     // --- Ambient ---
     outAmbient += light.ambient * matDiffuse;
@@ -179,10 +186,43 @@ void CalculateLightContribution(
         float specPower = pow(NdotH, matShininess);
 
         // matSpecular 
-        float specIntensity = matSpecular * specPower * fresnel * attenuation;
+        float specIntensity = matSpecular * specPower * fresnel * attenuation * visibility;
         
         outSpecular += light.specular * specIntensity;
     }
+}
+
+// [+] NEW: Helper to sample shadow map with PCF
+float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir) {
+    // 1. Perspective Divide
+    float3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+
+    // 2. Transform from NDC [-1,1] to Texture [0,1]
+    // Vulkan Y is flipped compared to OpenGL, but if we used standard projection:
+    projCoords.x = projCoords.x * 0.5 + 0.5;
+    projCoords.y = projCoords.y * 0.5 + 0.5;
+    
+    // Check if outside map
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+        return 0.0;
+
+    // 3. Bias (Slope Scale based)
+    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
+    
+    // 4. PCF (Percentage Closer Filtering) 3x3
+    float shadow = 0.0;
+    float2 texelSize = 1.0 / 2048.0; // Hardcoded size, ideally pass via CBuffer
+    
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            float pcfDepth = g_shadowMap.Sample(g_shadowSampler, projCoords.xy + float2(x, y) * texelSize).r; 
+            // If current depth > stored depth + bias, it is in shadow
+            shadow += (projCoords.z - bias > pcfDepth ? 1.0 : 0.0);        
+        }    
+    }
+    shadow /= 9.0;
+    
+    return shadow;
 }
 
 // ============================================================================
@@ -220,16 +260,23 @@ float4 PSMain(PSInput input) : SV_Target {
     float3 totalSpecular = float3(0, 0, 0);
     float3 totalAmbient = float3(0, 0, 0);
 
-    // ========================================================================
-    // [UPDATED] DYNAMIC LIGHTING LOOP
-    // Iterates through the UBO data populated by Shared Memory
-    // ========================================================================
-    
     // Clamp to max 10 to prevent infinite loops if memory is garbage
     uint safeLightCount = min(input_lightCount, 10);
 
+
+
     for(uint i = 0; i < safeLightCount; ++i)
     {
+        float visibility = 1.0;
+        // Only Light 0 casts shadows in this implementation
+        if (i == 1) { 
+            float3 L;
+            if (input_lights[i].type == 1) L = normalize(-input_lights[i].direction);
+            else L = normalize(input_lights[i].position - input.world_pos);
+            
+            // Returns 1.0 if in shadow, so we subtract
+            visibility = 1.0 - ShadowCalculation(input.shadow_coord, N, L);
+        }
         CalculateLightContribution(
             input_lights[i], 
             input.world_pos, 
@@ -241,7 +288,8 @@ float4 PSMain(PSInput input) : SV_Target {
             pushConst.material_reflectance,
             totalDiffuse, 
             totalSpecular, 
-            totalAmbient
+            totalAmbient,
+            visibility
         );
     }
 

@@ -84,6 +84,8 @@ struct LightInfo {
     
     uint32_t castShadow;
     float padding[3];  // 调整为3个float来补齐
+
+    glm::mat4 view_proj;
     
     // 转换函数
     static LightInfo fromMjvLight(const mjvLight& mjLight) {

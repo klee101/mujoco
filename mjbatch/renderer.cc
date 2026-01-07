@@ -140,6 +140,99 @@ int ResolveTextureFromMaterial(const mjModel* m, int matid) {
     return -1;
 }
 
+glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& lightDir) {
+    glm::vec3 center = glm::vec3(0.0f, 0.0f, 0.0f); 
+
+    // 2. 确定 View Matrix
+    float dist = 50.0f; 
+    glm::vec3 eye = center - glm::normalize(lightDir) * dist;
+
+    glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
+    if (std::abs(glm::dot(glm::normalize(lightDir), up)) > 0.99f) {
+        up = glm::vec3(0.0f, 1.0f, 0.0f); 
+    }
+
+    glm::mat4 view = glm::lookAt(eye, center, up);
+
+    // 3. Projection Matrix
+    float s = 1.0f;
+
+    float zRange = 100.0f;
+    
+    glm::mat4 proj = glm::ortho(-s, s, -s, s, -zRange, zRange);
+
+    // 4. Vulkan Clip Space Correction
+    const glm::mat4 clipCorrection = glm::mat4(
+        1.0f,  0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f,  0.0f, 0.5f, 0.0f,
+        0.0f,  0.0f, 0.5f, 1.0f
+    );
+    
+    
+    return clipCorrection * proj * view;
+}
+
+glm::mat4 ComputeModelMatrix(const ShmGeom& geom) {
+        glm::mat4 model_mat(1.0f);
+        
+        // Copy rotation (converting Row-Major SHM to Column-Major GLM)
+        // geom.mat is [r00, r01, r02, r10, r11, r12, r20, r21, r22]
+        model_mat[0][0] = geom.mat[0]; model_mat[1][0] = geom.mat[1]; model_mat[2][0] = geom.mat[2];
+        model_mat[0][1] = geom.mat[3]; model_mat[1][1] = geom.mat[4]; model_mat[2][1] = geom.mat[5];
+        model_mat[0][2] = geom.mat[6]; model_mat[1][2] = geom.mat[7]; model_mat[2][2] = geom.mat[8];
+
+        // Set position
+        model_mat[3][0] = geom.pos[0];
+        model_mat[3][1] = geom.pos[1];
+        model_mat[3][2] = geom.pos[2];
+
+        // Primitives are usually unit-sized in cache, so we scale them.
+        if (geom.type == 7) { // Mesh
+            // Meshes are usually pre-baked or scale is Identity
+            // If MuJoCo resizes mesh, apply scale here.
+            // Typically 'geom.size' is BBox, not transform scale for meshes.
+        } else if (geom.type == 0) { // Plane
+            // Scale x/y by size[0], size[1]
+            float sx = (geom.size[0] > 0) ? geom.size[0] : 1000.0f;
+            float sy = (geom.size[1] > 0) ? geom.size[1] : 1000.0f;
+            model_mat = glm::scale(model_mat, glm::vec3(sx, sy, 1.0f));
+            
+            // Z scale 1 for plane
+        } else if (geom.type == 2) { // Sphere
+            model_mat = glm::scale(model_mat, glm::vec3(geom.size[0]));
+        } else {
+            // Box, etc: Full 3D scale
+            model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], geom.size[2]));
+        }
+
+        return model_mat;
+}
+
+std::string GetMeshName(const ShmGeom &geom, const mjModel* m) {
+        std::string mesh_name;
+        if (geom.type == 0) { // mjGEOM_PLANE
+            mesh_name = "__builtin_plane";
+        } else if (geom.type == 2) { // mjGEOM_SPHERE
+            mesh_name = "__builtin_sphere";
+        } else if (geom.type == 3) { // mjGEOM_CAPSULE
+            mesh_name = "__builtin_capsule";
+        } else if (geom.type == 4) { // mjGEOM_ELLIPSOID
+            mesh_name = "__builtin_ellipsoid"; 
+        } else if (geom.type == 5) { // mjGEOM_CYLINDER
+            mesh_name = "__builtin_cylinder";
+        } else if (geom.type == 6) { // mjGEOM_BOX
+                mesh_name = "__builtin_box";
+        } else if (geom.type == 7) { // mjGEOM_MESH
+            mesh_name = (m->names) ? 
+                std::string(m->names + m->name_meshadr[geom.dataid/2]) : 
+                "mesh_" + std::to_string(geom.dataid);
+        } else {
+            return "unknown_geom";
+        }
+
+        return mesh_name;
+}
 // --------------------------- Factory / ctor ---------------------------------
 std::unique_ptr<BatchRenderer> BatchRenderer::Create(
     std::vector<mjModel*> models,
@@ -190,8 +283,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         depth_images_ = std::move(other.depth_images_);
         color_image_views_ = std::move(other.color_image_views_);
         depth_image_views_ = std::move(other.depth_image_views_);
-        command_pool_ = other.command_pool_;
-        command_buffers_ = std::move(other.command_buffers_);
         render_fence_ = std::move(other.render_fence_);
         staging_buffers_ = std::move(other.staging_buffers_);
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
@@ -209,7 +300,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         other.descriptor_pool_ = VK_NULL_HANDLE;
         other.vert_shader_module_ = VK_NULL_HANDLE;
         other.frag_shader_module_ = VK_NULL_HANDLE;
-        other.command_pool_ = VK_NULL_HANDLE;
         other.initialized_ = false;
     }
     return *this;
@@ -703,7 +793,8 @@ bool BatchRenderer::Initialize() {
     // here load all the textures from models
     material_textures_= LoadMaterialTextures();
 
-    // Create pipeline and resources
+
+
     if (!CreatePipeline()) {
         LOG(config_, "Initialize(): CreatePipeline failed");
         return false;
@@ -714,6 +805,17 @@ bool BatchRenderer::Initialize() {
     }
 
     InitGlobalGeometry();
+
+        // Create pipeline and resources
+    if(!CreateShadowResources()) {
+        LOG(config_, "Initialize(): CreateShadowResources failed");
+        return false;
+    }
+
+    if(!CreateShadowPipeline()){
+        LOG(config_, "Initialize(): CreateShadowPipeline failed");
+        return false;
+    }
 
     // Create buffers (Uniform, Command, etc.) 
     if (!CreateBuffers()) { 
@@ -937,9 +1039,9 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
 
 bool BatchRenderer::RecordCommandBuffers(int count) {
     Device &dev = *device_;
+    VkCommandBuffer cmd = command_buffer_;
     
     for (int i = 0; i < count; ++i) {
-        VkCommandBuffer cmd = command_buffers_[i];
         PerEnvResources &res = env_resources_[i];
         
         // --- 1. Begin Recording & Render Pass ---
@@ -1137,10 +1239,15 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             
             dst.castShadow  = (uint32_t)src.castshadow;
             dst.type = src.type;
+            dst.view_proj = ComputeLightViewProj(dst.position, dst.direction); 
+
         }
+
+        cached_shadow_matrices_[i] = env_light_ubo.lights[1].view_proj;// Assuming light 1 is the shadow caster
         
         for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
             int resource_idx = i * SHM_NUM_CAMERAS  + c;
+
             // --- 1. Update Camera UBO --
             const ShmCamera& src_cam = slot.cameras[c]; 
 
@@ -1193,28 +1300,112 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
 
 bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count) {
     Device &dev = *device_;
+   
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
+    
+    REQ_VK(dev.dt.resetCommandPool(dev.hdl, command_pool_, 0));
+    VkCommandBuffer cmd = command_buffer_;
+        // --- 1. Begin Recording & Render Pass ---
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+
     // --- STATISTICS COUNTERS ---
     int total_instances = 0;
     int drawn_instances = 0;
     int culled_instances = 0;
     // ---------------------------
 
-    for (int i = 0; i < count; ++i) {
-
+    for (int i = count - 1; i >= 0; --i) {
         const EnvRenderSlot& slot = slots[i];
+        // =========================================================================
+        // STEP A: SHADOW PASS (Render Once per Environment)
+        // =========================================================================
+        {
+            VkRenderPassBeginInfo shadowPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+            shadowPassInfo.renderPass = render_context_->shadowPass; // Defined in CreateShadowResources
+            shadowPassInfo.framebuffer = shadow_framebuffers_[i]; // One per env
+            shadowPassInfo.renderArea.extent = {SHADOW_MAP_DIM, SHADOW_MAP_DIM};
+            
+            VkClearValue clearDepth = {1.0f, 0};
+            shadowPassInfo.clearValueCount = 1;
+            shadowPassInfo.pClearValues = &clearDepth;
+
+            dev.dt.cmdBeginRenderPass(cmd, &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+
+            // Viewport for Shadow Map (Usually square, e.g., 2048x2048)
+            VkViewport vp = {0.0f, 0.0f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.0f, 1.0f};
+            dev.dt.cmdSetViewport(cmd, 0, 1, &vp);
+            VkRect2D sc = {{0, 0}, {SHADOW_MAP_DIM, SHADOW_MAP_DIM}};
+            dev.dt.cmdSetScissor(cmd, 0, 1, &sc);
+
+            // Bind Global Vertex Buffers
+            if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
+                VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+                vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+                // Draw All Geoms for Shadow (Simplified: No Culling for Shadow Caster)
+                // Note: Realistically you should cull objects that don't cast shadows
+                int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+                for (int g = 0; g < active_geoms; ++g) {
+                    const ShmGeom& geom = slot.geoms[g];
+                    
+                    // Reconstruct Model Matrix (Same logic as main pass)
+                    // ... (Include your matrix reconstruction code here) ...
+                    glm::mat4 model_mat = ComputeModelMatrix(geom); // [Helper you should extract]
+
+                    // Push Constants for Shadow Shader
+                    // Assuming Shadow Shader only needs: vec4 lightProj * lightView * model * position
+                    // We need to pass [LightViewProj] and [Model].
+                    // Or pre-multiply them on CPU: MVP = LightViewProj * Model
+                    
+                    glm::mat4 lightViewProj = cached_shadow_matrices_[i];
+
+                    PushConstantsShadow pc_shadow{};
+                    pc_shadow.mvp = lightViewProj * model_mat; 
+
+                    dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstantsShadow), &pc_shadow);
+
+                    // Find Mesh Entry
+                    auto it = global_mesh_cache_.find(GetMeshName(geom, models_[i]));
+                    if (it != global_mesh_cache_.end()) {
+                         vkCmdDrawIndexed(cmd, it->second.index_count, 1, it->second.index_offset, it->second.vertex_offset, 0);
+                    }
+                }
+            }
+            dev.dt.cmdEndRenderPass(cmd);
+        }
+
+        // STEP B: BARRIER (Wait for Shadow Map Write to Finish)
+        {
+            VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // Or Undefined if using LOAD_OP_CLEAR and not caring
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampler
+            barrier.image = shadow_images_[i].image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.layerCount = 1;
+
+            dev.dt.cmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+
+        // STEP C: MAIN RENDER PASSES (Loop over Cameras)
         for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
             int resource_idx = i * SHM_NUM_CAMERAS + c;
 
             // Retrieve Culling Info
             const auto& cull_info = camera_cull_info_[resource_idx];
 
-            VkCommandBuffer cmd = command_buffers_[resource_idx];
-            // --- 1. Begin Recording & Render Pass ---
-            VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
             
             VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
             renderPassInfo.renderPass = render_context_->renderPass;
@@ -1258,26 +1449,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                     total_instances++;
                     
                     // [A] Determine Mesh Name from Type/DataID
-                    std::string mesh_name;
-                    if (geom.type == 0) { // mjGEOM_PLANE
-                        mesh_name = "__builtin_plane";
-                    } else if (geom.type == 2) { // mjGEOM_SPHERE
-                        mesh_name = "__builtin_sphere";
-                    } else if (geom.type == 3) { // mjGEOM_CAPSULE
-                        mesh_name = "__builtin_capsule";
-                    } else if (geom.type == 4) { // mjGEOM_ELLIPSOID
-                        mesh_name = "__builtin_ellipsoid"; 
-                    } else if (geom.type == 5) { // mjGEOM_CYLINDER
-                        mesh_name = "__builtin_cylinder";
-                    } else if (geom.type == 6) { // mjGEOM_BOX
-                            mesh_name = "__builtin_box";
-                    } else if (geom.type == 7) { // mjGEOM_MESH
-                        mesh_name = (models_[i]->names) ? 
-                            std::string(models_[i]->names + models_[i]->name_meshadr[geom.dataid/2]) : 
-                            "mesh_" + std::to_string(geom.dataid);
-                    } else {
-                        continue; // Skip unsupported geoms
-                    }
+                    std::string mesh_name = GetMeshName(geom, models_[i]);
 
                     // [B] Lookup in Cache
                     auto it = global_mesh_cache_.find(mesh_name);
@@ -1291,39 +1463,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
 
                     // [C] Construct Model Matrix
                     // SHM provides 3x3 Rotation (row-major 9 floats) and Pos (3 floats)
-                    glm::mat4 model_mat(1.0f);
-                    
-                    // Copy rotation (converting Row-Major SHM to Column-Major GLM)
-                    // geom.mat is [r00, r01, r02, r10, r11, r12, r20, r21, r22]
-                    model_mat[0][0] = geom.mat[0]; model_mat[1][0] = geom.mat[1]; model_mat[2][0] = geom.mat[2];
-                    model_mat[0][1] = geom.mat[3]; model_mat[1][1] = geom.mat[4]; model_mat[2][1] = geom.mat[5];
-                    model_mat[0][2] = geom.mat[6]; model_mat[1][2] = geom.mat[7]; model_mat[2][2] = geom.mat[8];
-
-                    // Set position
-                    model_mat[3][0] = geom.pos[0];
-                    model_mat[3][1] = geom.pos[1];
-                    model_mat[3][2] = geom.pos[2];
-
-                    // Apply Scale based on Type
-                    // Primitives are usually unit-sized in cache, so we scale them.
-                    if (geom.type == 7) { // Mesh
-                        // Meshes are usually pre-baked or scale is Identity
-                        // If MuJoCo resizes mesh, apply scale here.
-                        // Typically 'geom.size' is BBox, not transform scale for meshes.
-                    } else if (geom.type == 0) { // Plane
-                        // Scale x/y by size[0], size[1]
-                        float sx = (geom.size[0] > 0) ? geom.size[0] : 1000.0f;
-                        float sy = (geom.size[1] > 0) ? geom.size[1] : 1000.0f;
-                        model_mat = glm::scale(model_mat, glm::vec3(sx, sy, 1.0f));
-                        
-                        // Z scale 1 for plane
-                    } else if (geom.type == 2) { // Sphere
-                        model_mat = glm::scale(model_mat, glm::vec3(geom.size[0]));
-                    } else {
-                        // Box, etc: Full 3D scale
-                        model_mat = glm::scale(model_mat, glm::vec3(geom.size[0], geom.size[1], geom.size[2]));
-                    }
-
+                    glm::mat4 model_mat = ComputeModelMatrix(geom);
                     // --- CULLING LOGIC ---
                     
                     // 1. Calculate World Space AABB
@@ -1408,9 +1548,10 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
             }
 
             dev.dt.cmdEndRenderPass(cmd);
-            REQ_VK(dev.dt.endCommandBuffer(cmd));
+
         }
     }
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
 
     // --- PRINT STATISTICS ---
     // NOTE: This will print every time Record is called. For high FPS, consider wrapping this in a timer.
@@ -1436,9 +1577,8 @@ bool BatchRenderer::SubmitAndWait() {
 
     // --- 2. prepare Batching submitinfo ---
     VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submitInfo.commandBufferCount = (uint32_t)command_buffers_.size();
-    submitInfo.pCommandBuffers = command_buffers_.data(); 
-    
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &command_buffer_; 
 
     // --- 3. One Submit ---
     VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, render_fence_);
@@ -1753,7 +1893,7 @@ bool BatchRenderer::CreatePipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // Camera and Light descriptor set layout
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     bindings[0].binding = 0; // Camera UBO
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -1762,7 +1902,13 @@ bool BatchRenderer::CreatePipeline() {
     bindings[1].binding = 1; // Lighting UBO
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[2].binding = 2; // Shadow Map (if used)
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1770,7 +1916,6 @@ bool BatchRenderer::CreatePipeline() {
     dslInfo.pBindings = bindings.data();
     REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &dslInfo, nullptr, &descriptor_set_layout_));
     
-
     // 1. Define the bindings
     uint32_t bindCount = 2;
     VkDescriptorSetLayoutBinding texbindings[] = {
@@ -1937,27 +2082,32 @@ bool BatchRenderer::CreateBuffers() {
 
     size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
     
-    // Create command pool
-    command_pool_ = makeCmdPool(dev, dev.gfxQF);
-    
-    // Allocate command buffers
-    command_buffers_.resize(total_slots);
+    VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    poolInfo.queueFamilyIndex = dev.gfxQF;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; 
+    REQ_VK(dev.dt.createCommandPool(dev.hdl, &poolInfo, nullptr, &command_pool_));
+
+    // 2. 分配单个 Command Buffer
+    // [MODIFIED] 只分配 1 个
     VkCommandBufferAllocateInfo allocCmdInfo{};
     allocCmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocCmdInfo.commandPool = command_pool_;
     allocCmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocCmdInfo.commandBufferCount = command_buffers_.size();
-    REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &allocCmdInfo, command_buffers_.data()));
-    
+    allocCmdInfo.commandBufferCount = 1; 
+
+    REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &allocCmdInfo, &command_buffer_));
+
     // Create fences
     render_fence_ = makeFence(dev, false);
     {
         // Create descriptor pool
-        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        std::array<VkDescriptorPoolSize, 3> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[0].descriptorCount = total_slots; // Camera UBOs
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[1].descriptorCount = total_slots; // Light UBOs
+        poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[2].descriptorCount = total_slots; // Shadow Map samplers
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2043,7 +2193,8 @@ bool BatchRenderer::CreateBuffers() {
         lightBufferInfo.offset = 0;
         lightBufferInfo.range = sizeof(LightUBO);
         
-        VkWriteDescriptorSet writes[2]{};
+        std::array<VkWriteDescriptorSet, 3> writes{};
+
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor_sets_[i];
         writes[0].dstBinding = 0;
@@ -2059,8 +2210,22 @@ bool BatchRenderer::CreateBuffers() {
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         writes[1].descriptorCount = 1;
         writes[1].pBufferInfo = &lightBufferInfo;
+
+        int env_idx = i / SHM_NUM_CAMERAS;
+
+        VkDescriptorImageInfo shadowInfo{};
+        shadowInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        shadowInfo.imageView = shadow_image_views_[env_idx]; // Use the env's shadow map
+        shadowInfo.sampler = shadow_sampler_;
+
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = descriptor_sets_[i];
+        writes[2].dstBinding = 2; // [IMPORTANT] Ensure Layout has binding 2 added!
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[2].descriptorCount = 1;
+        writes[2].pImageInfo = &shadowInfo;
         
-        dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
+        dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
     // update global texture descriptor set for bindless textures
@@ -2115,6 +2280,229 @@ bool BatchRenderer::CreateBuffers() {
     }
     
     LOG(config_, "CreateBuffers(): buffers created");
+    return true;
+}
+
+// [NEW] Add this function implementation
+bool BatchRenderer::CreateShadowResources() {
+    Device &dev = *device_;
+    MemoryAllocator &allocator = render_context_->allocator;
+    size_t count = config_.batch_size; // One shadow map per environment
+
+    shadow_images_.reserve(count);
+    shadow_image_views_.reserve(count);
+    shadow_framebuffers_.reserve(count);
+    cached_shadow_matrices_.resize(count);
+
+    // 1. Create Shadow Render Pass
+    VkAttachmentDescription attachmentDescription{};
+    attachmentDescription.format = VK_FORMAT_D32_SFLOAT;
+    attachmentDescription.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachmentDescription.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachmentDescription.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // We need to read it later
+    attachmentDescription.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachmentDescription.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachmentDescription.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampling
+
+    VkAttachmentReference depthReference = { 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 0; // Depth only
+    subpass.pDepthStencilAttachment = &depthReference;
+
+    // Dependency to ensure write finishes before read
+    std::array<VkSubpassDependency, 2> dependencies;
+    
+    // Transition 1: Undefined -> Depth Write
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    // Transition 2: Depth Write -> Shader Read
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &attachmentDescription;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    renderPassInfo.pDependencies = dependencies.data();
+
+    REQ_VK(dev.dt.createRenderPass(dev.hdl, &renderPassInfo, nullptr, &render_context_->shadowPass));
+
+    // 2. Create Sampler (Shadow Sampler with PCF support usually requires logic in shader, here strictly linear/nearest)
+    shadow_sampler_ = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+
+    // 3. Create Images and Framebuffers
+    for (size_t i = 0; i < count; ++i) {
+        // Image
+        auto depth_img = allocator.makeDepthAttachment(SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1, VK_FORMAT_D32_SFLOAT);
+        
+        // View
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = depth_img.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_D32_SFLOAT;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        
+        VkImageView depthView;
+        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depthView));
+
+        // Framebuffer
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = render_context_->shadowPass;
+        fbInfo.attachmentCount = 1;
+        fbInfo.pAttachments = &depthView;
+        fbInfo.width = SHADOW_MAP_DIM;
+        fbInfo.height = SHADOW_MAP_DIM;
+        fbInfo.layers = 1;
+
+        VkFramebuffer fb;
+        REQ_VK(dev.dt.createFramebuffer(dev.hdl, &fbInfo, nullptr, &fb));
+
+        shadow_images_.push_back(std::move(depth_img));
+        shadow_image_views_.push_back(depthView);
+        shadow_framebuffers_.push_back(fb);
+    }
+    
+    return true;
+}
+
+// [NEW] Function to create Shadow Pipeline (Vertex Only)
+bool BatchRenderer::CreateShadowPipeline() {
+    Device &dev = *device_;
+    std::string shader_dir = "/home/hpf/project/vulkan/mujoco/mujoco/build/shaders_spv/";
+    
+    // Reuse existing VS or create a specialized one "shadow_vs.spv"
+    // Shadow VS only needs: gl_Position = light_proj * light_view * model * pos;
+    // For now, assuming you compile a new shader 'shadow_vs.spv'
+    VkShaderModule shadow_vs = loadShaderModule(shader_dir + "shadow_vs.spv");
+
+    VkPipelineShaderStageCreateInfo vertStage{};
+    vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertStage.module = shadow_vs;
+    vertStage.pName = "VSMain"; // Entry point
+
+    // Vertex Input (Same as main pipeline to reuse buffers)
+    VkVertexInputBindingDescription bindingDescription{};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(float) * (3 + 3 + 2 + 4); 
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    // Only Position is needed
+    VkVertexInputAttributeDescription posAttr{};
+    posAttr.binding = 0;
+    posAttr.location = 0; 
+    posAttr.format = VK_FORMAT_R32G32B32_SFLOAT;
+    posAttr.offset = 0;
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &bindingDescription;
+    vertexInput.vertexAttributeDescriptionCount = 1;
+    vertexInput.pVertexAttributeDescriptions = &posAttr;
+
+    // Input Assembly
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // Viewport (Dynamic)
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    // Rasterizer
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // Often better to draw backfaces or none for shadows
+    rasterizer.depthBiasEnable = VK_FALSE;      // [IMPORTANT] Shadow bias
+    rasterizer.depthBiasConstantFactor = 1.25f;
+    rasterizer.depthBiasSlopeFactor = 1.75f;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling.minSampleShading = 1.0f; 
+    multisampling.pSampleMask = nullptr;
+    multisampling.alphaToCoverageEnable = VK_FALSE;
+    multisampling.alphaToOneEnable = VK_FALSE;
+
+    // Depth Stencil
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+    // No Color Blend (Depth only)
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 0;
+
+    // Dynamic State
+    std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = dynamicStates.size();
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    // Pipeline Layout (Push Constant for MVP)
+    // We reuse the main pipeline layout but we only use the PushConstant range 
+    // You might want a separate layout if the sets are different, but reusing is okay if sets are compatible.
+    // Shadow pass usually only needs PushConstant (Model) + PushConstant (LightViewProj) OR a UBO.
+    // Let's assume we pass LightViewProj via PushConstant offset or a specific UBO.
+    // For simplicity: reuse pipeline_layout_ and pass Model via PushConstant, LightMatrix via logic? 
+    // Actually, usually Shadow Pass needs [LightMatrix * ModelMatrix]. 
+    // Let's assume the Shadow VS takes the SAME PushConstants as main, but ignores material stuff.
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 1;
+    pipelineInfo.pStages = &vertStage;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipeline_layout_; // Reuse
+    pipelineInfo.renderPass = render_context_->shadowPass;
+    pipelineInfo.subpass = 0;
+
+    REQ_VK(dev.dt.createGraphicsPipelines(dev.hdl, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadow_pipeline_));
+    
+    dev.dt.destroyShaderModule(dev.hdl, shadow_vs, nullptr);
     return true;
 }
 
@@ -2205,12 +2593,6 @@ void BatchRenderer::DestroyVulkanResources() {
     color_images_.clear();
     depth_images_.clear();
     
-    // Destroy command pool (command buffers are freed automatically)
-    if (command_pool_ != VK_NULL_HANDLE) {
-        dev.dt.destroyCommandPool(dev.hdl, command_pool_, nullptr);
-        command_pool_ = VK_NULL_HANDLE;
-    }
-    
     // Destroy fences
     if(render_fence_ != VK_NULL_HANDLE) {
         dev.dt.destroyFence(dev.hdl, render_fence_, nullptr);
@@ -2219,6 +2601,15 @@ void BatchRenderer::DestroyVulkanResources() {
     
     // Staging buffers are destroyed via HostBuffer destructors
     staging_buffers_.clear();
+
+    // Destroy shadow resources
+    if (shadow_pipeline_ != VK_NULL_HANDLE) dev.dt.destroyPipeline(dev.hdl, shadow_pipeline_, nullptr);
+    
+    dev.dt.destroySampler(dev.hdl, shadow_sampler_, nullptr);
+
+    for(auto fb : shadow_framebuffers_) dev.dt.destroyFramebuffer(dev.hdl, fb, nullptr);
+    
+    for(auto view : shadow_image_views_) dev.dt.destroyImageView(dev.hdl, view, nullptr);
     
     LOG(config_, "DestroyVulkanResources(): resources released");
 }

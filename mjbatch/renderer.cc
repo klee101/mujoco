@@ -141,10 +141,10 @@ int ResolveTextureFromMaterial(const mjModel* m, int matid) {
 }
 
 glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& lightDir) {
-    glm::vec3 center = glm::vec3(0.0f, 0.0f, 0.0f); 
+    glm::vec3 center = glm::vec3(0.0f, 0.0f, 0.5f); 
 
     // 2. 确定 View Matrix
-    float dist = 50.0f; 
+    float dist = 5.0f; 
     glm::vec3 eye = center - glm::normalize(lightDir) * dist;
 
     glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
@@ -154,12 +154,13 @@ glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& light
 
     glm::mat4 view = glm::lookAt(eye, center, up);
 
-    // 3. Projection Matrix
+    // 3. Projection Matsrix
     float s = 1.0f;
 
-    float zRange = 100.0f;
+    float frustum_near = 0.01f;
+    float frustum_far = 100.0f;
     
-    glm::mat4 proj = glm::ortho(-s, s, -s, s, -zRange, zRange);
+    glm::mat4 proj = glm::ortho(-s, s, -s, s, frustum_near, frustum_far);
 
     // 4. Vulkan Clip Space Correction
     const glm::mat4 clipCorrection = glm::mat4(

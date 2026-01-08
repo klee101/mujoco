@@ -263,8 +263,6 @@ float4 PSMain(PSInput input) : SV_Target {
     // Clamp to max 10 to prevent infinite loops if memory is garbage
     uint safeLightCount = min(input_lightCount, 10);
 
-
-
     for(uint i = 0; i < safeLightCount; ++i)
     {
         float visibility = 1.0;

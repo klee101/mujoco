@@ -81,9 +81,10 @@ struct LightInfo {
     
     glm::vec3 attenuation; // x: constant, y: linear, z: quadratic
     float intensity;
-    
+
+    float padding[3];  // notice: here to align to 16 bytes, must reverse order with castShadow
     uint32_t castShadow;
-    float padding[3];  // 调整为3个float来补齐
+
 
     glm::mat4 view_proj;
     

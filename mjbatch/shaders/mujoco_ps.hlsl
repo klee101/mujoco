@@ -27,8 +27,8 @@ struct LightInfo {
     float3 attenuation; 
     float intensity;    
 
+    float3 padding; 
     uint castShadow;
-    float padding[3]; 
 
     float4x4 view_proj;
 };
@@ -36,7 +36,7 @@ struct LightInfo {
 cbuffer LightData : register(b1, space0) {
     LightInfo input_lights[10];
     uint input_lightCount;
-    float pad[3];
+    float3 pad;
 };
 
 struct PushConstants {
@@ -49,7 +49,7 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
-    int padding[2];
+    float2 padding;
 };
 
 [[vk::push_constant]]
@@ -241,7 +241,7 @@ float4 PSMain(PSInput input) : SV_Target {
         float4 texColor = float4(1,1,1,1);
         
         if (pushConst.texture_type == 0) { // 2D Texture
-            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, input.texcoord);
+            texColor = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
         } 
         else if (pushConst.texture_type == 1) { // Simulated Environment Map
             float3 uvw = normalize(input.sample_vec);
@@ -249,7 +249,7 @@ float4 PSMain(PSInput input) : SV_Target {
             // [CHANGE] Use Spherical instead of Cube to fix the "Prism" look
             float2 spherical_uv = CalculateSphericalUV(uvw);
             
-            texColor = g_textures[NonUniformResourceIndex(pushConst.texture_index)].Sample(g_sampler, spherical_uv);
+            texColor = g_textures[pushConst.texture_index].Sample(g_sampler, spherical_uv);
         }
         
         base_color *= texColor;

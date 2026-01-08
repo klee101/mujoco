@@ -23,8 +23,8 @@ struct LightInfo {
     float3 attenuation; 
     float intensity;    
 
+    float3 padding; 
     uint castShadow;
-    float padding[3]; 
 
     float4x4 view_proj;
 };
@@ -32,7 +32,7 @@ struct LightInfo {
 cbuffer LightData : register(b1, space0) {
     LightInfo input_lights[10];
     uint input_lightCount;
-    float pad[3];
+    float3 pad;
 };
 
 struct PushConstants {
@@ -44,8 +44,8 @@ struct PushConstants {
     float material_reflectance;
     
     int texture_index;
-    int texture_type;  // -1: Unlit/Color, 0: 2D Texture, 1: Cube Texture
-    int padding[2];
+    int texture_type;
+    float2 padding;
 };
 
 [[vk::push_constant]]

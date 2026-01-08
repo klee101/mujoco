@@ -5,7 +5,7 @@
 #include <memory>
 #include <filesystem>
 #include <unordered_map>
-#include "basePass.h"
+#include "base_parser.h"
 
 namespace mujoco::mjbatch::shader {
     struct ShaderConfig;      // 用于存储生成的 DescriptorLayout 描述

@@ -131,24 +131,38 @@ add_custom_target(generate_dispatch DEPENDS
 
 # Build renderer library.
 add_library(renderer STATIC
-  renderer.h           renderer.cc
-  render_context.h     render_context.cc
-  device.h             device.cc
-  memory.h             memory.cc
-  backend.h            backend.cc
-  dispatch.hpp         dispatch.cpp
-  scene.h              scene.cc
-  builtin.h            builtin.cc
-  utils.h              
-  vkutils.h            vkutils.cc           vkutils.inl
-  memcpy_avx.h
-  pipeline_shaders.h  pipeline_shaders.cc
+  renderer.cc
+  render_context.cc
+  device.cc
+  memory.cc
+  backend.cc
+  dispatch.cpp
+  scene.cc
+  builtin.cc
+  vkutils.cc
+  pipeline_shaders.cc
+
+  include/renderer.h
+  include/render_context.h
+  include/device.h
+  include/memory.h
+  include/backend.h
+  include/dispatch.hpp
+  include/scene.h
+  include/builtin.h
+  include/utils.h
+  include/vkutils.h
+  include/vkutils.inl
+  include/memcpy_avx.h
+  include/pipeline_shaders.h
 )
+
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_include_directories(renderer PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
+
 
 target_link_libraries(renderer PUBLIC
   mujoco::mujoco

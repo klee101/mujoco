@@ -15,6 +15,7 @@
 #include <mutex>
 #include <queue>
 #include <functional>
+#include <filesystem>
 #include <vulkan/vulkan.h>
 #include <cstring>
 #include "memcpy_avx.h"

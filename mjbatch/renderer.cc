@@ -10,6 +10,8 @@
 #include <cstring>
 #include <cassert>
 #include <algorithm>
+#include <unistd.h>
+#include <limits.h>
 
 using namespace mujoco::mjbatch;
 
@@ -20,6 +22,19 @@ inline void DefaultLog(const std::string &s) {
 }
 
 } // namespace
+
+
+
+std::filesystem::path getLibraryDir()
+{
+    Dl_info info;
+    if (dladdr((void*)&getLibraryDir, &info) && info.dli_fname)
+    {
+        return std::filesystem::path(info.dli_fname).parent_path();
+    }
+    return {};
+}
+
 
 // --------------------------- Helpers ----------------------------------------
 #define LOG(cfg, msg) do { \
@@ -789,8 +804,10 @@ bool BatchRenderer::GenerateBRDFLUT() {
     // -------------------------------------------------------------------------
     
     // 2. Load Compute Shader
-    std::string shader_dir = "/home/hpf/project/vulkan/mujoco/mujoco/build/shaders_spv/";
-    VkShaderModule compShader = loadShaderModule(shader_dir + "brdf_lut_cs.spv"); 
+    std::filesystem::path shaderPath =
+    getLibraryDir() / ".." / "shaders_spv" / "brdf_lut_cs.spv";
+
+    VkShaderModule compShader = loadShaderModule(shaderPath.string());
 
     // 3. Descriptor Set Layout for Compute (1 Storage Image)
     VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -1901,9 +1918,11 @@ bool BatchRenderer::CreatePipeline() {
     
     // Load shaders (assuming they're compiled to .spv files)
     // In a real implementation, you'd get the shader path from build system
-    std::string shader_dir = "/home/hpf/project/vulkan/mujoco/mujoco/build/shaders_spv/";  // This should come from build config
-    vert_shader_module_ = loadShaderModule(shader_dir + "mujoco_vs.spv");
-    frag_shader_module_ = loadShaderModule(shader_dir + "mujoco_ps.spv");
+    std::filesystem::path shaderDir = getLibraryDir() / ".." / "shaders_spv";
+
+    vert_shader_module_ = loadShaderModule((shaderDir / "mujoco_vs.spv").string());
+
+    frag_shader_module_ = loadShaderModule((shaderDir / "mujoco_ps.spv").string());
     
     // Create shader stages
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};

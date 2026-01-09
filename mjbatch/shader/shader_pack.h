@@ -61,9 +61,9 @@ public:
     // 资源布局接口
     // ========================================================================
     
-    /**
+    /** 
      * @brief 获取通过反射生成的全局资源布局配置。
-     * Renderer 会根据这个 Config 来创建 VkDescriptorSetLayout。
+     * NOTE: Renderer 会根据这个 Config 来创建 VkDescriptorSetLayout。
      */
     [[nodiscard]] std::shared_ptr<ShaderConfig> getShaderConfig() const { return m_shaderConfig; }
 

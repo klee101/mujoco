@@ -69,6 +69,9 @@ SamplerState g_shadowSampler : register(s2, space0);
 Texture2D g_brdfLUT : register(t3, space0); 
 SamplerState g_brdfSampler : register(s3, space0); // Typically linear clamp
 
+TextureCube g_envMap : register(t4, space0);
+SamplerState g_envSampler : register(s4, space0);
+
 struct PSInput {
     float4 position : SV_Position;
     float3 normal : NORMAL;
@@ -90,7 +93,7 @@ struct PSInput {
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-static const float IBL_INTENSITY = 0.05; // 降低环境光强度 (默认 1.0 改为 0.3~0.5)
+static const float IBL_INTENSITY = 0.1; 
 static const float EXPOSURE = 1.5;      // 曝光值，配合 Tone Mapping 使用
 
 // ============================================================================
@@ -148,37 +151,22 @@ float3 IBL_Contribution(
     float3 kD = 1.0 - kS;
     kD *= (1.0 - metallic); // Metals have no diffuse
 
-    float3 irradiance = float3(0,0,0);
-    
-    if (envMapIndex >= 0) {
-         // [IMPORTANT] SampleLevel is required to access specific Mip Levels
-         float2 uv = CalculateSphericalUV(N); 
-         irradiance = g_textures[envMapIndex].SampleLevel(g_sampler, uv, 6.0).rgb; 
-    } else {
-        irradiance = float3(0.03, 0.03, 0.03); // Fallback ambient
-    }
-
+    // [FIX] Cubemap 采样: 直接使用法线 N 作为方向
+    // 使用高 Mip Level (6.0) 模拟辐照度模糊
+    float3 irradiance = g_envMap.SampleLevel(g_envSampler, N, 6.0).rgb; 
     float3 diffuse = irradiance * albedo;
 
-    // 2. Specular IBL (Split-Sum Approximation)
-    float3 specular = float3(0,0,0);
-    
-    if (envMapIndex >= 0) {
-        // Part A: Prefiltered Environment Map (Sampled based on Roughness)
-        // Map roughness 0..1 to texture LOD levels (e.g., 0..8)
-        const float MAX_REFLECTION_LOD = 8.0; 
-        float lod = roughness * MAX_REFLECTION_LOD;
-        
-        float2 uv = CalculateSphericalUV(R);
-        float3 prefilteredColor = g_textures[envMapIndex].SampleLevel(g_sampler, uv, lod).rgb;
+    // 2. Specular IBL
+    // A. Prefiltered Map: 直接使用反射向量 R 采样 Cubemap
+    const float MAX_REFLECTION_LOD = 8.0; 
+    float lod = roughness * MAX_REFLECTION_LOD;
+    float3 prefilteredColor = g_envMap.SampleLevel(g_envSampler, R, lod).rgb;
 
-        // Part B: BRDF Integration LUT (Sampled using NdotV and Roughness)
-        // This LUT contains the scale and bias for the Fresnel term
-        float NdotV = max(dot(N, V), 0.0);
-        float2 envBRDF = g_brdfLUT.Sample(g_brdfSampler, float2(NdotV, roughness)).rg;
+    // B. BRDF LUT (保持不变)
+    float NdotV = max(dot(N, V), 0.0);
+    float2 envBRDF = g_brdfLUT.Sample(g_brdfSampler, float2(NdotV, roughness)).rg;
 
-        specular = prefilteredColor * (F0 * envBRDF.x + envBRDF.y);
-    }
+    float3 specular = prefilteredColor * (F0 * envBRDF.x + envBRDF.y);
 
     return (kD * diffuse + specular); 
 }
@@ -298,10 +286,12 @@ float4 PSMain(PSInput input) : SV_Target {
     // PBR / IBL Parameter Derivation (MuJoCo -> PBR approximation)
     // --------------------------------------------------------
     // 1. Convert Blinn-Phong Shininess to Roughness
-    //    Roughness ~ sqrt(2 / (shininess + 2))
-    float roughness = sqrt(2.0 / (max(pushConst.material_shininess, 0.001) + 2.0));
-    roughness = clamp(roughness, 0.04, 1.0); // Clamp to avoid singularity
+    //    shininess in [0,1] mapped to [0,128] for conversion 
+    float shininess = clamp(pushConst.material_shininess * 128.0, 0.0, 128.0);
 
+    // Industry standard approximation
+    float roughness = sqrt(2.0 / (shininess + 2.0));
+    roughness = clamp(roughness, 0.04, 1.0);
     // 2. Reflectance (F0)
     //    Assumes dielectric unless specified. F0 is typically 0.04 for plastics.
     //    MuJoCo's 'reflectance' parameter maps reasonably well to F0 magnitude.

@@ -55,6 +55,9 @@ static constexpr VkImageUsageFlags iblUsage =
 
 };
 
+static constexpr VkImageUsageFlags cubeMapUsage =
+    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+
 
 template <bool host_mapped>
 void AllocDeleter<host_mapped>::operator()(VkBuffer buffer) const
@@ -794,38 +797,59 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureIbl(
     return makeIblTexture<2>(width, height, 1, mip_levels, fmt);
 }
 
-
-std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCube(
-    uint32_t size,
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCubeMap(
+    uint32_t width,
+    uint32_t height,
     uint32_t mip_levels,
     VkFormat fmt)
 {
-    return makeTextureCubeInternal(size, mip_levels, fmt);
+    return makeCubeMapTexture<2>(width, height, 1, mip_levels, fmt);
+}
+
+
+// 在 .h 文件中修改声明
+std::pair<LocalTexture, TextureRequirements> makeTextureCube(
+    uint32_t size,
+    uint32_t mip_levels,
+    VkFormat fmt,
+    VkImageUsageFlags usage); // [新增]
+
+// 在 .cpp 文件中修改实现
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCube(
+    uint32_t size,
+    uint32_t mip_levels,
+    VkFormat fmt,
+    VkImageUsageFlags usage) // [新增]
+{
+    // 直接传给 Internal
+    return makeTextureCubeInternal(size, mip_levels, fmt, usage);
 }
 
 std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCubeInternal(
     uint32_t size,
     uint32_t mip_levels,
-    VkFormat fmt)
+    VkFormat fmt,
+    VkImageUsageFlags usage) // [新增]
 {
     VkImageCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;   // ⭐ 必须
+    info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = fmt;
     info.extent = { size, size, 1 };
     info.mipLevels = mip_levels;
-    info.arrayLayers = 6;                               // ⭐ 6 个面
+    info.arrayLayers = 6;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    
+    // [修正] 使用传入的 usage，而不是写死
+    info.usage = usage; 
+    
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImage texture_img;
-    vkCreateImage(dev.hdl, &info, nullptr, &texture_img);
+    REQ_VK(vkCreateImage(dev.hdl, &info, nullptr, &texture_img)); // 建议加上错误检查
 
     auto reqs = getImageMemReqs(dev, texture_img);
 
@@ -834,7 +858,7 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCubeInt
             size,
             size,
             mip_levels,
-            texture_img
+            texture_img          
         },
         TextureRequirements{
             reqs.alignment,
@@ -872,6 +896,33 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTexture(
 
 template <int dims>
 std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeIblTexture(
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    uint32_t mip_levels,
+    VkFormat fmt)
+{
+    VkImage texture_img = makeImage<dims>(dev, width, height, depth,
+        mip_levels, 1, fmt, ImageFlags::iblUsage);
+
+    auto reqs = getImageMemReqs(dev, texture_img);
+
+    return {
+        LocalTexture {
+            width,
+            height,
+            mip_levels,
+            texture_img,
+        },
+        TextureRequirements {
+            reqs.alignment,
+            reqs.size,
+        },
+    };
+}
+
+template <int dims>
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeCubeMapTexture(
     uint32_t width,
     uint32_t height,
     uint32_t depth,

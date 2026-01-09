@@ -35,6 +35,13 @@ std::filesystem::path getLibraryDir()
     return {};
 }
 
+std::filesystem::path getAssetsDir() {
+    auto libDir = getLibraryDir();
+    if (libDir.empty()) return {};
+    // LibraryDir -> build/lib -> ../.. -> mujoco root -> mjbatch/assets
+    return libDir.parent_path().parent_path() / "mjbatch" / "assets";
+}
+
 
 // --------------------------- Helpers ----------------------------------------
 #define LOG(cfg, msg) do { \
@@ -605,6 +612,284 @@ LoadedTextureResources BatchRenderer::LoadMaterialTextures()
     return result;
 }
 
+bool BatchRenderer::LoadEnvironmentMap() {
+    LOG(config_, "LoadEnvironmentMap(): Starting...");
+    Device &dev = *device_;
+    MemoryAllocator &allocator = render_context_->allocator;
+
+    // A. Load HDR File (CPU)
+    std::filesystem::path hdrPath = getAssetsDir() / "default.hdr";
+    if (!std::filesystem::exists(hdrPath)) {
+        LOG(config_, "Error: default.hdr not found at " + hdrPath.string());
+        return false;
+    }
+
+    int width, height, nrComponents;
+    float *data = stbi_loadf(hdrPath.string().c_str(), &width, &height, &nrComponents, 4); // Force 4 channels
+    if (!data) {
+        LOG(config_, "Error: Failed to load HDR image.");
+        return false;
+    }
+
+    // B. Upload to 2D Texture (Intermediate)
+    VkDeviceSize imageSize = width * height * 4 * sizeof(float);
+    HostBuffer staging = allocator.makeStagingBuffer(imageSize);
+    std::memcpy(staging.ptr, data, imageSize);
+    staging.flush(dev);
+    stbi_image_free(data); // Free CPU memory
+
+    auto tex2d_res = allocator.makeTextureCubeMap( width, width, 1, VK_FORMAT_R32G32B32A32_SFLOAT );
+    env_map_.env_2d_texture = std::move(tex2d_res.first);
+    
+    // Allocate 2D memory
+    auto backing2d = allocator.alloc(tex2d_res.second.size);
+    if (!backing2d) return false;
+    dev.dt.bindImageMemory(dev.hdl, env_map_.env_2d_texture.image, backing2d.value(), 0);
+    env_map_.memory_2d = backing2d.value();
+
+    // Create 2D View (for Compute Shader reading)
+    VkImageViewCreateInfo viewInfo2D{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo2D.image = env_map_.env_2d_texture.image;
+    viewInfo2D.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo2D.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    viewInfo2D.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo2D, nullptr, &env_map_.view_2d));
+
+    // Execute Copy (Staging -> 2D)
+    VkCommandBuffer cmd = render_context_->load_cmd_;
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+
+    // Barrier: Undefined -> Transfer Dst
+    VkImageMemoryBarrier barrier0{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier0.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier0.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier0.srcAccessMask = 0;
+    barrier0.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier0.image = env_map_.env_2d_texture.image;
+    barrier0.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier0);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
+    dev.dt.cmdCopyBufferToImage(cmd, staging.buffer, env_map_.env_2d_texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Barrier: Transfer Dst -> Shader Read (General for Compute)
+    VkImageMemoryBarrier barrier1 = barrier0;
+    barrier1.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier1.newLayout = VK_IMAGE_LAYOUT_GENERAL; 
+    barrier1.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier1.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier1);
+
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cmd, 0, nullptr};
+    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, VK_NULL_HANDLE));
+    dev.dt.deviceWaitIdle(dev.hdl); // Wait for upload
+
+    // C. Create Cubemap Image (Target)
+    // 1024x1024 per face, Mip levels = floor(log2(1024)) + 1 = 11
+    uint32_t cubeDim = 1024;
+    uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(cubeDim))) + 1;
+
+    // 参数 1: size (只需要一个，因为是正方形)
+    // 参数 2: mip_levels
+    // 参数 3: format
+    // 参数 4: usage (必须包含 STORAGE_BIT 用于 Compute Shader，SAMPLED_BIT 用于后续采样)
+    auto cube_res = allocator.makeTextureCube(
+        cubeDim, 
+        mipLevels, 
+        VK_FORMAT_R32G32B32A32_SFLOAT, 
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+    );
+   env_map_.cubemap_texture = std::move(cube_res.first);
+    
+    auto backingCube = allocator.alloc(cube_res.second.size);
+    if (!backingCube) return false;
+    dev.dt.bindImageMemory(dev.hdl, env_map_.cubemap_texture.image, backingCube.value(), 0);
+    env_map_.memory_cube = backingCube.value();
+
+    // Create Cube View (For Shader Sampling)
+    VkImageViewCreateInfo viewInfoCube{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfoCube.image = env_map_.cubemap_texture.image;
+    viewInfoCube.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    viewInfoCube.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    viewInfoCube.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 6};
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfoCube, nullptr, &env_map_.view_cube));
+
+    // D. Run Compute Shader (Equirectangular -> Cubemap)
+    // We assume the shader converts to the base mip level (0)
+    
+    // Create view for Mip 0 (Storage Image)
+    VkImageViewCreateInfo storageViewInfo = viewInfoCube;
+    storageViewInfo.subresourceRange.levelCount = 1; 
+    VkImageView cubeMip0View;
+    REQ_VK(dev.dt.createImageView(dev.hdl, &storageViewInfo, nullptr, &cubeMip0View));
+
+    // Load Shader
+    std::filesystem::path csPath = getLibraryDir() / ".." / "shaders_spv" / "envmap_cs.spv";
+    if (!std::filesystem::exists(csPath)) {
+        LOG(config_, "Error: equirect_2_cube.spv not found. Skipping IBL generation.");
+        return false;
+    }
+    VkShaderModule compShader = loadShaderModule(csPath.string());
+
+    // Create Pipeline (1 Combined Sampler for input, 1 Storage Image for output)
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}, // Input 2D
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}          // Output Cube
+    };
+    VkDescriptorSetLayoutCreateInfo descLayoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 2, bindings};
+    VkDescriptorSetLayout compDescLayout;
+    REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &descLayoutInfo, nullptr, &compDescLayout));
+
+    VkPipelineLayoutCreateInfo plLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &compDescLayout, 0, nullptr};
+    VkPipelineLayout compPipelineLayout;
+    REQ_VK(dev.dt.createPipelineLayout(dev.hdl, &plLayoutInfo, nullptr, &compPipelineLayout));
+
+    VkPipelineShaderStageCreateInfo shaderStage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, compShader, "main", nullptr};
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, shaderStage, compPipelineLayout, VK_NULL_HANDLE, 0};
+    VkPipeline compPipeline;
+    REQ_VK(dev.dt.createComputePipelines(dev.hdl, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compPipeline));
+
+    // Allocate & Update Sets
+    VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 2, poolSizes};
+    VkDescriptorPool compPool;
+    REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &compPool));
+
+    VkDescriptorSetAllocateInfo setAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, compPool, 1, &compDescLayout};
+    VkDescriptorSet compSet;
+    REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &setAllocInfo, &compSet));
+
+    // Create a temporary sampler for the equirectangular map
+    VkSampler equirectSampler = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    VkDescriptorImageInfo inputInfo{equirectSampler, env_map_.view_2d, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo outputInfo{VK_NULL_HANDLE, cubeMip0View, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2] = {
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &inputInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outputInfo, nullptr, nullptr}
+    };
+    dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
+
+    // Dispatch
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+    
+    // Transition Cube to General
+    VkImageMemoryBarrier barrierCube{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrierCube.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrierCube.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrierCube.srcAccessMask = 0;
+    barrierCube.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrierCube.image = env_map_.cubemap_texture.image;
+    barrierCube.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6}; // Mip 0, All 6 faces
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierCube);
+
+    dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
+    dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipelineLayout, 0, 1, &compSet, 0, nullptr);
+    // Dispatch: (1024/32, 1024/32, 6 faces) assuming 32x32 local size
+    dev.dt.cmdDispatch(cmd, cubeDim / 32, cubeDim / 32, 6);
+
+    // E. Generate Mipmaps (Using vkCmdBlitImage)
+    // Transition Mip 0 to SrcOptimal
+    VkImageMemoryBarrier barrierMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrierMips.image = env_map_.cubemap_texture.image;
+    barrierMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrierMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrierMips.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrierMips.subresourceRange.baseArrayLayer = 0;
+    barrierMips.subresourceRange.layerCount = 6;
+    barrierMips.subresourceRange.levelCount = 1;
+
+    int32_t mipWidth = cubeDim;
+    int32_t mipHeight = cubeDim;
+
+    for (uint32_t i = 1; i < mipLevels; i++) {
+        // 1. Transition previous mip (i-1) to TRANSFER_SRC_OPTIMAL
+        barrierMips.subresourceRange.baseMipLevel = i - 1;
+        barrierMips.oldLayout = (i == 1) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrierMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrierMips.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrierMips.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        
+        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierMips);
+
+        // 2. Transition current mip (i) to TRANSFER_DST_OPTIMAL
+        VkImageMemoryBarrier barrierDst = barrierMips;
+        barrierDst.subresourceRange.baseMipLevel = i;
+        barrierDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrierDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrierDst.srcAccessMask = 0;
+        barrierDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierDst);
+
+        // 3. Blit
+        VkImageBlit blit{};
+        blit.srcOffsets[0] = {0, 0, 0};
+        blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.mipLevel = i - 1;
+        blit.srcSubresource.baseArrayLayer = 0;
+        blit.srcSubresource.layerCount = 6;
+
+        blit.dstOffsets[0] = {0, 0, 0};
+        blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
+        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.dstSubresource.mipLevel = i;
+        blit.dstSubresource.baseArrayLayer = 0;
+        blit.dstSubresource.layerCount = 6;
+
+        dev.dt.cmdBlitImage(cmd, 
+            env_map_.cubemap_texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            env_map_.cubemap_texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit, VK_FILTER_LINEAR);
+
+        // 4. Transition previous mip (i-1) to SHADER_READ_ONLY
+        VkImageMemoryBarrier barrierRead = barrierMips;
+        barrierRead.subresourceRange.baseMipLevel = i - 1;
+        barrierRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrierRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrierRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrierRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierRead);
+
+        if (mipWidth > 1) mipWidth /= 2;
+        if (mipHeight > 1) mipHeight /= 2;
+    }
+
+    // Transition last mip to SHADER_READ_ONLY
+    VkImageMemoryBarrier barrierLast = barrierMips;
+    barrierLast.subresourceRange.baseMipLevel = mipLevels - 1;
+    barrierLast.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrierLast.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrierLast.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrierLast.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierLast);
+
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
+    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, render_context_->load_fence_));
+    waitForFenceInfinitely(dev, render_context_->load_fence_);
+
+    // F. Cleanup
+    dev.dt.destroyImageView(dev.hdl, cubeMip0View, nullptr);
+    dev.dt.destroySampler(dev.hdl, equirectSampler, nullptr);
+    dev.dt.destroyDescriptorPool(dev.hdl, compPool, nullptr);
+    dev.dt.destroyDescriptorSetLayout(dev.hdl, compDescLayout, nullptr);
+    dev.dt.destroyPipeline(dev.hdl, compPipeline, nullptr);
+    dev.dt.destroyPipelineLayout(dev.hdl, compPipelineLayout, nullptr);
+    dev.dt.destroyShaderModule(dev.hdl, compShader, nullptr);
+
+    // Create Final Sampler for Cubemap
+    env_map_.sampler = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    LOG(config_, "LoadEnvironmentMap(): Done.");
+    return true;
+}
+
 void BatchRenderer::InitGlobalGeometry() {
     LOG(config_, "InitGlobalGeometry(): Starting mesh deduplication and upload...");
 
@@ -931,6 +1216,11 @@ bool BatchRenderer::Initialize() {
 
     if(!GenerateBRDFLUT()){
         LOG(config_, "Initialize(): GenerateBRDFLUT failed");
+        return false;
+    }
+
+    if(!LoadEnvironmentMap()){
+        LOG(config_, "Initialize(): LoadEnvironmentMap failed");
         return false;
     }
 
@@ -2034,7 +2324,7 @@ bool BatchRenderer::CreatePipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // Camera and Light descriptor set layout
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     bindings[0].binding = 0; // Camera UBO
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -2056,6 +2346,13 @@ bool BatchRenderer::CreatePipeline() {
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[3].pImmutableSamplers = nullptr;
+
+    // Binding 4: Environment Cubemap
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[4].pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2254,7 +2551,7 @@ bool BatchRenderer::CreateBuffers() {
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[1].descriptorCount = total_slots; // Light UBOs
         poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[2].descriptorCount = total_slots * 2; // Shadow Map + BRDF LUT
+        poolSizes[2].descriptorCount = total_slots * 3; // Shadow Map + BRDF LUT
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2340,7 +2637,7 @@ bool BatchRenderer::CreateBuffers() {
         lightBufferInfo.offset = 0;
         lightBufferInfo.range = sizeof(LightUBO);
         
-        std::array<VkWriteDescriptorSet, 4> writes{};
+        std::array<VkWriteDescriptorSet, 5> writes{};
 
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor_sets_[i];
@@ -2385,6 +2682,20 @@ bool BatchRenderer::CreateBuffers() {
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[3].descriptorCount = 1;
         writes[3].pImageInfo = &brdfInfo;
+
+        // Write 4: Environment Cubemap
+        VkDescriptorImageInfo envInfo{};
+        envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        envInfo.imageView = env_map_.view_cube;
+        envInfo.sampler = env_map_.sampler;
+
+        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet = descriptor_sets_[i];
+        writes[4].dstBinding = 4;
+        writes[4].dstArrayElement = 0;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[4].descriptorCount = 1;
+        writes[4].pImageInfo = &envInfo;
         
         dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
@@ -2688,6 +2999,14 @@ void BatchRenderer::DestroyVulkanResources() {
     if (brdf_lut_.texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, brdf_lut_.texture.image, nullptr);
     if (brdf_lut_.memory != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, brdf_lut_.memory, nullptr);
     if (brdf_lut_.sampler != VK_NULL_HANDLE) dev.dt.destroySampler(dev.hdl, brdf_lut_.sampler, nullptr);
+
+    if (env_map_.view_cube != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, env_map_.view_cube, nullptr);
+    if (env_map_.view_2d != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, env_map_.view_2d, nullptr);
+    if (env_map_.cubemap_texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, env_map_.cubemap_texture.image, nullptr);
+    if (env_map_.env_2d_texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, env_map_.env_2d_texture.image, nullptr);
+    if (env_map_.memory_cube != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, env_map_.memory_cube, nullptr);
+    if (env_map_.memory_2d != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, env_map_.memory_2d, nullptr);
+    if (env_map_.sampler != VK_NULL_HANDLE) dev.dt.destroySampler(dev.hdl, env_map_.sampler, nullptr);
 
     global_vertex_buffer_.reset();
     global_index_buffer_.reset();

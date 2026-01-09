@@ -141,6 +141,7 @@ add_library(renderer STATIC
   builtin.cc
   vkutils.cc
   pipeline_shaders.cc
+  stb_impl.cc
 
   include/renderer.h
   include/render_context.h
@@ -155,6 +156,7 @@ add_library(renderer STATIC
   include/vkutils.inl
   include/memcpy_avx.h
   include/pipeline_shaders.h
+  include/stb_image.h
 )
 
 target_compile_options(renderer PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})

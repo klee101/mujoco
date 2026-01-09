@@ -247,10 +247,14 @@ public:
                   uint32_t mip_levels, VkFormat fmt);
     
     std::pair<LocalTexture, TextureRequirements>
-    makeTextureCube(uint32_t size, uint32_t mip_levels, VkFormat fmt);
+    makeTextureCube(uint32_t size, uint32_t mip_levels, VkFormat fmt,VkImageUsageFlags usage);
 
     std::pair<LocalTexture, TextureRequirements>
     makeTextureIbl(uint32_t width, uint32_t height, uint32_t mip_levels,
+                VkFormat fmt);
+    
+    std::pair<LocalTexture, TextureRequirements>
+    makeTextureCubeMap(uint32_t width, uint32_t height, uint32_t mip_levels,
                 VkFormat fmt);
 
     void destroyTexture(LocalTexture &&texture);
@@ -283,8 +287,13 @@ private:
     makeIblTexture(uint32_t width, uint32_t height, uint32_t depth,
                 uint32_t mip_levels, VkFormat fmt);
 
+    template <int dims>
+    std::pair<LocalTexture, TextureRequirements>
+    makeCubeMapTexture(uint32_t width, uint32_t height, uint32_t depth,
+                uint32_t mip_levels, VkFormat fmt);
+
     std::pair<LocalTexture, TextureRequirements> makeTextureCubeInternal(
-        uint32_t size, uint32_t mip_levels, VkFormat fmt);
+        uint32_t size, uint32_t mip_levels, VkFormat fmt, VkImageUsageFlags usage);
 
     std::optional<LocalBuffer> makeLocalBuffer(VkDeviceSize num_bytes,
                                                VkBufferUsageFlags usage,

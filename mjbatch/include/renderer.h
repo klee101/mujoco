@@ -25,6 +25,7 @@
 #include "memory.h"
 #include "scene.h"
 #include "shared_protocol.h"
+#include "stb_image.h"
 
 #include <nvtx3/nvToolsExt.h> 
 
@@ -281,6 +282,16 @@ struct BRDFResources {
     VkSampler sampler = VK_NULL_HANDLE;
 };
 
+struct EnvMapResources {
+    mujoco::mjbatch::LocalTexture env_2d_texture;
+    mujoco::mjbatch::LocalTexture cubemap_texture;
+    VkImageView view_2d = VK_NULL_HANDLE;
+    VkImageView view_cube = VK_NULL_HANDLE;
+    VkDeviceMemory memory_2d = VK_NULL_HANDLE;
+    VkDeviceMemory memory_cube = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+};
+
 
 /*
 * BatchRenderer - Vulkan-based Batch Renderer for MuJoCo
@@ -407,7 +418,7 @@ private:
     */
     VkShaderModule loadShaderModule(const std::string& shader_path);
 
-    /*
+    /** 
     * LoadMaterialTextures - Load and upload all material textures from models
     * 
     * NOTE: Now it is only a simple version to test this feature
@@ -418,6 +429,12 @@ private:
     *       which means that all the cube map will not only present to be duplicated 6 times
     */
     LoadedTextureResources LoadMaterialTextures();
+
+    /**
+     * LoadEnvironmentMap - Load and upload the environment map for IBL
+     * 
+     */
+    bool LoadEnvironmentMap();
 
     /*
     * ReadSPIRV - Read SPIR-V binary from file
@@ -519,6 +536,7 @@ private:
     std::vector<FrameObservation> frames;
 
     BRDFResources brdf_lut_;
+    EnvMapResources env_map_;
 
     RenderStats last_stats_;
     bool initialized_ = false;

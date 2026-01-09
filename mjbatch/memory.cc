@@ -50,6 +50,9 @@ static constexpr VkImageUsageFlags depthAttachmentUsage =
     VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
     VK_IMAGE_USAGE_SAMPLED_BIT;
 
+static constexpr VkImageUsageFlags iblUsage =
+    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
 };
 
 
@@ -782,6 +785,15 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTexture3D(
     return makeTexture<3>(width, height, depth, mip_levels, fmt);
 }
 
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureIbl(
+    uint32_t width,
+    uint32_t height,
+    uint32_t mip_levels,
+    VkFormat fmt)
+{
+    return makeIblTexture<2>(width, height, 1, mip_levels, fmt);
+}
+
 
 std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTextureCube(
     uint32_t size,
@@ -841,6 +853,33 @@ std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeTexture(
 {
     VkImage texture_img = makeImage<dims>(dev, width, height, depth,
         mip_levels, 1, fmt, ImageFlags::textureUsage);
+
+    auto reqs = getImageMemReqs(dev, texture_img);
+
+    return {
+        LocalTexture {
+            width,
+            height,
+            mip_levels,
+            texture_img,
+        },
+        TextureRequirements {
+            reqs.alignment,
+            reqs.size,
+        },
+    };
+}
+
+template <int dims>
+std::pair<LocalTexture, TextureRequirements> MemoryAllocator::makeIblTexture(
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    uint32_t mip_levels,
+    VkFormat fmt)
+{
+    VkImage texture_img = makeImage<dims>(dev, width, height, depth,
+        mip_levels, 1, fmt, ImageFlags::iblUsage);
 
     auto reqs = getImageMemReqs(dev, texture_img);
 

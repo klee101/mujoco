@@ -167,7 +167,6 @@ HLSLCompiler::compileToSpirv(vk::ShaderStageFlagBits shaderStage,
                 // 注意：shaderc 报错行号可能因为 define 略有偏差，但通常 globalLine-1 是对应的
                 if (globalLine > 0 && globalLine <= debugInfo.size()) {
                     auto [origFile, origLine] = debugInfo[globalLine - 1];
-                    // Logger 替换为你的日志系统
                     std::cerr << "Shader Error [" << entryPoint << "] " 
                               << origFile << ":" << origLine << ": " << reason << std::endl;
                 } else {

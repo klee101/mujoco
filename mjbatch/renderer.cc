@@ -755,6 +755,124 @@ void BatchRenderer::InitGlobalGeometry() {
     
 }
 
+// [ADDED] New Helper Function Implementation
+bool BatchRenderer::GenerateBRDFLUT() {
+    LOG(config_, "GenerateBRDFLUT(): Starting...");
+    Device &dev = *device_;
+    MemoryAllocator &allocator = render_context_->allocator;
+
+    // 1. Create Image (512x512, R16G16_SFLOAT)
+    // We need STORAGE usage for Compute Shader, SAMPLED for PBR Shader
+    auto res = allocator.makeTextureIbl(512, 512, 1, VK_FORMAT_R16G16_SFLOAT);
+    brdf_lut_.texture = std::move(res.first);
+    TextureRequirements reqs = res.second;
+
+    auto backing = allocator.alloc(reqs.size);
+    if (!backing.has_value()) return false;
+    brdf_lut_.memory = backing.value();
+    
+    dev.dt.bindImageMemory(dev.hdl, brdf_lut_.texture.image, brdf_lut_.memory, 0);
+
+    // Create ImageView
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = brdf_lut_.texture.image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R16G16_SFLOAT;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &brdf_lut_.view));
+
+    // Create Sampler (Linear, Clamp to Edge)
+    brdf_lut_.sampler = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    // -------------------------------------------------------------------------
+    // COMPUTE PIPELINE SETUP
+    // -------------------------------------------------------------------------
+    
+    // 2. Load Compute Shader
+    std::string shader_dir = "/home/hpf/project/vulkan/mujoco/mujoco/build/shaders_spv/";
+    VkShaderModule compShader = loadShaderModule(shader_dir + "brdf_lut_cs.spv"); 
+
+    // 3. Descriptor Set Layout for Compute (1 Storage Image)
+    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 1, &binding};
+    VkDescriptorSetLayout compDescLayout;
+    REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &layoutInfo, nullptr, &compDescLayout));
+
+    // 4. Pipeline Layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &compDescLayout, 0, nullptr};
+    VkPipelineLayout compPipelineLayout;
+    REQ_VK(dev.dt.createPipelineLayout(dev.hdl, &pipelineLayoutInfo, nullptr, &compPipelineLayout));
+
+    // 5. Compute Pipeline
+    VkPipelineShaderStageCreateInfo shaderStage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, compShader, "main", nullptr};
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, shaderStage, compPipelineLayout, VK_NULL_HANDLE, 0};
+    VkPipeline compPipeline;
+    REQ_VK(dev.dt.createComputePipelines(dev.hdl, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compPipeline));
+
+    // 6. Allocate & Update Descriptor Set
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 1, &poolSize};
+    VkDescriptorPool compPool;
+    REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &compPool));
+
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, compPool, 1, &compDescLayout};
+    VkDescriptorSet compSet;
+    REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocInfo, &compSet));
+
+    VkDescriptorImageInfo imageInfo{VK_NULL_HANDLE, brdf_lut_.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imageInfo, nullptr, nullptr};
+    dev.dt.updateDescriptorSets(dev.hdl, 1, &write, 0, nullptr);
+
+    // -------------------------------------------------------------------------
+    // EXECUTION
+    // -------------------------------------------------------------------------
+    VkCommandBuffer cmd = render_context_->load_cmd_;
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+
+    // Transition: Undefined -> General
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.image = brdf_lut_.texture.image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    // Dispatch
+    dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
+    dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipelineLayout, 0, 1, &compSet, 0, nullptr);
+    dev.dt.cmdDispatch(cmd, 512 / 8, 512 / 8, 1); // 8x8 local size assumed
+
+    // Transition: General -> Shader Read Only
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
+
+    // Submit & Wait
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cmd, 0, nullptr};
+    resetFence(dev, render_context_->load_fence_);
+    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, render_context_->load_fence_));
+    waitForFenceInfinitely(dev, render_context_->load_fence_);
+
+    // -------------------------------------------------------------------------
+    // CLEANUP TEMPORARY RESOURCES
+    // -------------------------------------------------------------------------
+    dev.dt.destroyDescriptorPool(dev.hdl, compPool, nullptr);
+    dev.dt.destroyDescriptorSetLayout(dev.hdl, compDescLayout, nullptr);
+    dev.dt.destroyPipeline(dev.hdl, compPipeline, nullptr);
+    dev.dt.destroyPipelineLayout(dev.hdl, compPipelineLayout, nullptr);
+    dev.dt.destroyShaderModule(dev.hdl, compShader, nullptr);
+
+    LOG(config_, "GenerateBRDFLUT(): Done.");
+    return true;
+}
+
 bool BatchRenderer::Initialize() {
     LOG(config_, "Initialize(): starting");
 
@@ -794,7 +912,10 @@ bool BatchRenderer::Initialize() {
     // here load all the textures from models
     material_textures_= LoadMaterialTextures();
 
-
+    if(!GenerateBRDFLUT()){
+        LOG(config_, "Initialize(): GenerateBRDFLUT failed");
+        return false;
+    }
 
     if (!CreatePipeline()) {
         LOG(config_, "Initialize(): CreatePipeline failed");
@@ -1894,7 +2015,7 @@ bool BatchRenderer::CreatePipeline() {
     dynamicState.pDynamicStates = dynamicStates.data();
 
     // Camera and Light descriptor set layout
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
     bindings[0].binding = 0; // Camera UBO
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -1910,6 +2031,12 @@ bool BatchRenderer::CreatePipeline() {
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[2].pImmutableSamplers = nullptr;
+
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[3].pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutCreateInfo dslInfo{};
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2108,7 +2235,7 @@ bool BatchRenderer::CreateBuffers() {
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[1].descriptorCount = total_slots; // Light UBOs
         poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[2].descriptorCount = total_slots; // Shadow Map samplers
+        poolSizes[2].descriptorCount = total_slots * 2; // Shadow Map + BRDF LUT
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2194,7 +2321,7 @@ bool BatchRenderer::CreateBuffers() {
         lightBufferInfo.offset = 0;
         lightBufferInfo.range = sizeof(LightUBO);
         
-        std::array<VkWriteDescriptorSet, 3> writes{};
+        std::array<VkWriteDescriptorSet, 4> writes{};
 
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor_sets_[i];
@@ -2225,6 +2352,20 @@ bool BatchRenderer::CreateBuffers() {
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[2].descriptorCount = 1;
         writes[2].pImageInfo = &shadowInfo;
+
+        // Write 3: BRDF LUT
+        VkDescriptorImageInfo brdfInfo{};
+        brdfInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        brdfInfo.imageView = brdf_lut_.view;
+        brdfInfo.sampler = brdf_lut_.sampler;
+        
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = descriptor_sets_[i];
+        writes[3].dstBinding = 3;
+        writes[3].dstArrayElement = 0;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].descriptorCount = 1;
+        writes[3].pImageInfo = &brdfInfo;
         
         dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
@@ -2523,6 +2664,11 @@ void BatchRenderer::DestroyVulkanResources() {
     material_textures_.textures_2d.clear();
 
     dev.dt.destroySampler(dev.hdl, texture_sampler_, nullptr);
+
+    if (brdf_lut_.view != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, brdf_lut_.view, nullptr);
+    if (brdf_lut_.texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, brdf_lut_.texture.image, nullptr);
+    if (brdf_lut_.memory != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, brdf_lut_.memory, nullptr);
+    if (brdf_lut_.sampler != VK_NULL_HANDLE) dev.dt.destroySampler(dev.hdl, brdf_lut_.sampler, nullptr);
 
     global_vertex_buffer_.reset();
     global_index_buffer_.reset();

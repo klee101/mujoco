@@ -273,6 +273,13 @@ struct FrameObservation {
     size_t total_bytes;      
 };
 
+struct BRDFResources {
+    mujoco::mjbatch::LocalTexture texture; // Use your LocalTexture struct wrapper
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+};
+
 
 /*
 * BatchRenderer - Vulkan-based Batch Renderer for MuJoCo
@@ -422,6 +429,11 @@ private:
     */
     void InitGlobalGeometry();
 
+    /*
+    * GenerateBRDFLUT - Used for PBR specular IBL
+    */
+   bool GenerateBRDFLUT();
+
 
 private:
     std::vector<mjModel*> models_;
@@ -504,6 +516,8 @@ private:
 
     // Output buffers
     std::vector<FrameObservation> frames;
+
+    BRDFResources brdf_lut_;
 
     RenderStats last_stats_;
     bool initialized_ = false;

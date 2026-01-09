@@ -45,7 +45,7 @@ foreach(HLSL_FILE ${HLSL_FILES})
         set(ENTRY "PSMain")
     elseif(FILE_NAME_LOWER MATCHES ".*cs.*")
         set(TARGET "cs")
-        set(ENTRY "CSMain")
+        set(ENTRY "main")
     else()
         # 默认使用 Vertex Shader
         set(TARGET "vs")

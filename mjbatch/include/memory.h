@@ -249,6 +249,10 @@ public:
     std::pair<LocalTexture, TextureRequirements>
     makeTextureCube(uint32_t size, uint32_t mip_levels, VkFormat fmt);
 
+    std::pair<LocalTexture, TextureRequirements>
+    makeTextureIbl(uint32_t width, uint32_t height, uint32_t mip_levels,
+                VkFormat fmt);
+
     void destroyTexture(LocalTexture &&texture);
 
     std::optional<VkDeviceMemory> alloc(VkDeviceSize num_bytes);
@@ -272,6 +276,11 @@ private:
     template <int dims>
     std::pair<LocalTexture, TextureRequirements>
     makeTexture(uint32_t width, uint32_t height, uint32_t depth,
+                uint32_t mip_levels, VkFormat fmt);
+    
+    template <int dims>
+    std::pair<LocalTexture, TextureRequirements>
+    makeIblTexture(uint32_t width, uint32_t height, uint32_t depth,
                 uint32_t mip_levels, VkFormat fmt);
 
     std::pair<LocalTexture, TextureRequirements> makeTextureCubeInternal(

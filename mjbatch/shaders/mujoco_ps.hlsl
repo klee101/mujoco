@@ -27,7 +27,7 @@ struct LightInfo {
     float3 attenuation; 
     float intensity;    
 
-    float3 padding; 
+    float3 padding_l; 
     uint castShadow;
 
     float4x4 view_proj;
@@ -49,20 +49,25 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
-    float2 padding;
+    float2 padding_pc;
 };
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pushConst;
 
 // ============================================================================
-// TEXTURE RESOURCES (Bindless)
+// TEXTURE RESOURCES (Bindless & IBL)
 // ============================================================================
 Texture2D g_textures[] : register(t0, space1);
 SamplerState g_sampler : register(s1, space1);
 
 Texture2D g_shadowMap : register(t2, space0);
 SamplerState g_shadowSampler : register(s2, space0);
+
+// [NEW] BRDF LUT for Split-Sum Approximation
+// This matches the C++ descriptor set binding 3
+Texture2D g_brdfLUT : register(t3, space0); 
+SamplerState g_brdfSampler : register(s3, space0); // Typically linear clamp
 
 struct PSInput {
     float4 position : SV_Position;
@@ -81,6 +86,12 @@ struct PSInput {
 #ifndef DEBUG_VIEW
   #define DEBUG_VIEW 0
 #endif
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+static const float IBL_INTENSITY = 0.3; // 降低环境光强度 (默认 1.0 改为 0.3~0.5)
+static const float EXPOSURE = 1.5;      // 曝光值，配合 Tone Mapping 使用
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -102,37 +113,88 @@ float3 ACESToneMapping(float3 color) {
     return saturate((color * (A * color + B)) / (color * (C * color + D) + E));
 }
 
-// [NEW] Spherical Equirectangular Mapping
-// Maps a 3D vector to a 2D texture coordinate smoothly (like a world map)
+// Spherical Equirectangular Mapping
 float2 CalculateSphericalUV(float3 v) {
-    // 1. Calculate the angle in the XZ plane (Horizontal)
-    // atan2(x, z) returns range [-PI, PI]
     float phi = atan2(v.x, v.z); 
-    
-    // 2. Calculate the elevation angle (Vertical)
-    // asin(y) returns range [-PI/2, PI/2] (Assuming normalized v)
     float theta = asin(clamp(v.y, -1.0, 1.0));
-
-    // 3. Map to [0, 1] UV space
     const float PI = 3.14159265359;
     float u = (phi / (2.0 * PI)) + 0.5;
     float v_coord = (theta / PI) + 0.5; 
-
-    // Optional: Flip V if texture is upside down
     return float2(u, 1.0 - v_coord); 
 }
 
+// [NEW] Fresnel Schlick approximation
+float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness) {
+    return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// [NEW] IBL Contribution Function
+// Calculates Diffuse Irradiance + Specular Image Based Lighting
+float3 IBL_Contribution(
+    float3 N, 
+    float3 V, 
+    float3 R, 
+    float3 albedo, 
+    float3 F0, 
+    float roughness, 
+    float metallic,
+    int envMapIndex
+) {
+    // 1. Diffuse IBL (Irradiance)
+    // We approximate irradiance by sampling the environment map at a very high mip level.
+    // This blurs the details, leaving average color.
+    
+    float3 kS = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
+    float3 kD = 1.0 - kS;
+    kD *= (1.0 - metallic); // Metals have no diffuse
+
+    float3 irradiance = float3(0,0,0);
+    
+    if (envMapIndex >= 0) {
+         // [IMPORTANT] SampleLevel is required to access specific Mip Levels
+         float2 uv = CalculateSphericalUV(N); 
+         irradiance = g_textures[envMapIndex].SampleLevel(g_sampler, uv, 6.0).rgb; 
+    } else {
+        irradiance = float3(0.03, 0.03, 0.03); // Fallback ambient
+    }
+
+    float3 diffuse = irradiance * albedo;
+
+    // 2. Specular IBL (Split-Sum Approximation)
+    float3 specular = float3(0,0,0);
+    
+    if (envMapIndex >= 0) {
+        // Part A: Prefiltered Environment Map (Sampled based on Roughness)
+        // Map roughness 0..1 to texture LOD levels (e.g., 0..8)
+        const float MAX_REFLECTION_LOD = 8.0; 
+        float lod = roughness * MAX_REFLECTION_LOD;
+        
+        float2 uv = CalculateSphericalUV(R);
+        float3 prefilteredColor = g_textures[envMapIndex].SampleLevel(g_sampler, uv, lod).rgb;
+
+        // Part B: BRDF Integration LUT (Sampled using NdotV and Roughness)
+        // This LUT contains the scale and bias for the Fresnel term
+        float NdotV = max(dot(N, V), 0.0);
+        float2 envBRDF = g_brdfLUT.Sample(g_brdfSampler, float2(NdotV, roughness)).rg;
+
+        specular = prefilteredColor * (F0 * envBRDF.x + envBRDF.y);
+    }
+
+    return (kD * diffuse + specular); 
+}
+
+
 // ============================================================================
-// LIGHTING CALCULATION
+// LIGHTING CALCULATION (Direct Light)
 // ============================================================================
 void CalculateLightContribution(
     LightInfo light, 
     float3 worldPos,
-    float3 N,           // Normal
-    float3 V,           // View Dir
-    float3 matDiffuse,  // Base Color
-    float matSpecular,  // Specular Color
-    float matShininess, // Shininess
+    float3 N, 
+    float3 V, 
+    float3 matDiffuse, 
+    float matSpecular, 
+    float matShininess, 
     float matReflectance, 
     inout float3 outDiffuse,
     inout float3 outSpecular,
@@ -142,9 +204,6 @@ void CalculateLightContribution(
     float3 L;
     float attenuation = 1.0;
 
-    // --- Light Vector Setup ---
-    // Note: MuJoCo directional lights have 'direction' pointing along the light ray.
-    // For lighting calculations, L needs to point TOWARDS the light source.
     if (light.type == 1) { // Directional
         L = normalize(-light.direction);
     } else { // Point or Spot
@@ -171,7 +230,7 @@ void CalculateLightContribution(
     outDiffuse += light.diffuse * matDiffuse * NdotL * attenuation * visibility;
 
     // --- Ambient ---
-    outAmbient += light.ambient * matDiffuse;
+    outAmbient += light.ambient * matDiffuse; // This is direct light ambient
 
     // --- Specular (Schlick Fresnel + Blinn-Phong) ---
     if (NdotL > 0.0) {
@@ -179,49 +238,36 @@ void CalculateLightContribution(
         float NdotH = max(dot(N, H), 0.0);
         float HdotV = max(dot(H, V), 0.0);
 
-        // Fresnel (scalar)
         float baseF   = matReflectance; 
         float fresnel = baseF + (1.0 - baseF) * pow(1.0 - HdotV, 5.0);
 
         float specPower = pow(NdotH, matShininess);
-
-        // matSpecular 
         float specIntensity = matSpecular * specPower * fresnel * attenuation * visibility;
         
         outSpecular += light.specular * specIntensity;
     }
 }
 
-// [+] NEW: Helper to sample shadow map with PCF
+// Helper to sample shadow map with PCF
 float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir) {
-    // 1. Perspective Divide
     float3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-
-    // 2. Transform from NDC [-1,1] to Texture [0,1]
-    // Vulkan Y is flipped compared to OpenGL, but if we used standard projection:
     projCoords.x = projCoords.x * 0.5 + 0.5;
     projCoords.y = projCoords.y * 0.5 + 0.5;
     
-    // Check if outside map
     if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
         return 0.0;
 
-    // 3. Bias (Slope Scale based)
     float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
-    
-    // 4. PCF (Percentage Closer Filtering) 3x3
     float shadow = 0.0;
-    float2 texelSize = 1.0 / 2048.0; // Hardcoded size, ideally pass via CBuffer
+    float2 texelSize = 1.0 / 2048.0; 
     
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
             float pcfDepth = g_shadowMap.Sample(g_shadowSampler, projCoords.xy + float2(x, y) * texelSize).r; 
-            // If current depth > stored depth + bias, it is in shadow
             shadow += (projCoords.z - bias > pcfDepth ? 1.0 : 0.0);        
         }    
     }
     shadow /= 9.0;
-    
     return shadow;
 }
 
@@ -229,97 +275,113 @@ float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir
 // PIXEL SHADER MAIN
 // ============================================================================
 float4 PSMain(PSInput input) : SV_Target {
-    // 1. Prepare Geometry Vectors
     float3 N = normalize(input.normal);
     float3 V = normalize(input.view_dir);
+    float3 R = reflect(-V, N);
 
-    // 2. Prepare Material Color (Base Color * Texture)
+    // Prepare Base Material Params
     float4 base_color = pushConst.material_rgba * input.color;
     
-    // Texture Logic
+    // Apply Texture (Base Color / Albedo)
     if (pushConst.texture_index >= 0) {
         float4 texColor = float4(1,1,1,1);
-        
-        if (pushConst.texture_type == 0) { // 2D Texture
-            texColor = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
-        } 
-        else if (pushConst.texture_type == 1) { // Simulated Environment Map
-            float3 uvw = normalize(input.sample_vec);
-            
-            // [CHANGE] Use Spherical instead of Cube to fix the "Prism" look
-            float2 spherical_uv = CalculateSphericalUV(uvw);
-            
-            texColor = g_textures[pushConst.texture_index].Sample(g_sampler, spherical_uv);
+        if (pushConst.texture_type == 0) { // 2D Albedo
+             texColor = g_textures[pushConst.texture_index].Sample(g_sampler, input.texcoord);
+        } else if (pushConst.texture_type == 1) { // Env Map (Used as color? Unusual but kept for compatibility)
+             float2 spherical_uv = CalculateSphericalUV(normalize(input.sample_vec));
+             texColor = g_textures[pushConst.texture_index].Sample(g_sampler, spherical_uv);
         }
-        
         base_color *= texColor;
     }
 
-    // 3. Prepare Lighting Accumulators
+    // --------------------------------------------------------
+    // PBR / IBL Parameter Derivation (MuJoCo -> PBR approximation)
+    // --------------------------------------------------------
+    // 1. Convert Blinn-Phong Shininess to Roughness
+    //    Roughness ~ sqrt(2 / (shininess + 2))
+    float roughness = sqrt(2.0 / (max(pushConst.material_shininess, 0.001) + 2.0));
+    roughness = clamp(roughness, 0.04, 1.0); // Clamp to avoid singularity
+
+    // 2. Reflectance (F0)
+    //    Assumes dielectric unless specified. F0 is typically 0.04 for plastics.
+    //    MuJoCo's 'reflectance' parameter maps reasonably well to F0 magnitude.
+    float3 F0 = float3(pushConst.material_reflectance, pushConst.material_reflectance, pushConst.material_reflectance);
+    float metallic = 0.0; // Default to dielectric
+
+    // --------------------------------------------------------
+    // Direct Lighting Loop
+    // --------------------------------------------------------
     float3 totalDiffuse = float3(0, 0, 0);
     float3 totalSpecular = float3(0, 0, 0);
     float3 totalAmbient = float3(0, 0, 0);
 
-    // Clamp to max 10 to prevent infinite loops if memory is garbage
     uint safeLightCount = min(input_lightCount, 10);
 
     for(uint i = 0; i < safeLightCount; ++i)
     {
         float visibility = 1.0;
-        // Only Light 0 casts shadows in this implementation
+        // Shadow logic (Light 1 only for this demo)
         if (i == 1) { 
             float3 L;
             if (input_lights[i].type == 1) L = normalize(-input_lights[i].direction);
             else L = normalize(input_lights[i].position - input.world_pos);
-            
-            // Returns 1.0 if in shadow, so we subtract
             visibility = 1.0 - ShadowCalculation(input.shadow_coord, N, L);
         }
+        
         CalculateLightContribution(
-            input_lights[i], 
-            input.world_pos, 
-            N, 
-            V, 
+            input_lights[i], input.world_pos, N, V, 
             base_color.rgb, 
             pushConst.material_specular, 
             pushConst.material_shininess, 
             pushConst.material_reflectance,
-            totalDiffuse, 
-            totalSpecular, 
-            totalAmbient,
+            totalDiffuse, totalSpecular, totalAmbient,
             visibility
         );
     }
 
-    // 4. Combine Lighting
-    float3 final_color = totalAmbient + totalDiffuse + totalSpecular;
+    // --------------------------------------------------------
+    // IBL Contribution
+    // --------------------------------------------------------
+    float3 ambientIBL = float3(0,0,0);
     
-    // Add Emission
+    // Determine which environment map to use. 
+    // Logic: If the object has a texture of type 1 (EnvMap), use it for IBL.
+    // Ideally, you should pass a 'GlobalSkyboxIndex' in PushConstants if no local env map exists.
+    int envMapIdx = (pushConst.texture_type == 1) ? pushConst.texture_index : 0;
+    
+    if (envMapIdx >= 0) {
+        ambientIBL = IBL_Contribution(N, V, R, base_color.rgb, F0, roughness, metallic, envMapIdx);
+        ambientIBL *= IBL_INTENSITY;
+    } else {
+        ambientIBL = totalAmbient; 
+    }
+
+    // --------------------------------------------------------
+    // Final Combination
+    // --------------------------------------------------------
+    float3 final_color = totalDiffuse + totalSpecular;
+    
+    // Replace constant ambient with IBL if available
+    if (envMapIdx >= 0) {
+        final_color += ambientIBL; 
+    } else {
+        final_color += totalAmbient;
+    }
+
     final_color += base_color.rgb * pushConst.material_emission;
 
-    // ========================================================================
-    // DEBUG VIEWS
-    // ========================================================================
     #if DEBUG_VIEW == 1
-        return float4(N * 0.5 + 0.5, 1.0); // Normals
+        return float4(N * 0.5 + 0.5, 1.0); 
     #elif DEBUG_VIEW == 2
-        return float4(HeatMap(pushConst.material_reflectance), 1.0); // Reflectance
+        return float4(HeatMap(roughness), 1.0); 
     #elif DEBUG_VIEW == 3
-        return float4(totalDiffuse + totalAmbient, 1.0); // Diffuse Only
+        return float4(ambientIBL, 1.0); 
     #elif DEBUG_VIEW == 4
-        return float4(totalSpecular, 1.0); // Specular Only
-    #elif DEBUG_VIEW == 5
-        return float4(input.texcoord, 0.0, 1.0); // UVs
+        return float4(totalSpecular, 1.0); 
     #endif
 
-    // ========================================================================
-    // POST PROCESSING
-    // ========================================================================
-    
-    // Tone Mapping
+    // Tone Mapping & Gamma
     final_color = ACESToneMapping(final_color);
-    
-    // Gamma Correction
     final_color = pow(final_color, 1.0 / 2.2);
 
     return float4(final_color, base_color.a);

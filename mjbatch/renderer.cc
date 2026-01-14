@@ -165,13 +165,9 @@ int ResolveTextureFromMaterial(const mjModel* m, int matid) {
 glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& lightDir) {
     glm::vec3 eye = lightPos; 
 
-    printf("Light Position: %s\n", glm_vec3_to_string(lightPos).c_str());
-
     // 2. 确定 View Matrix
     float dist = 1.0f; 
     glm::vec3 center = eye + glm::normalize(lightDir) * dist;
-
-    printf("Light Direction: %s\n", glm_vec3_to_string(lightDir).c_str());
 
     glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
     if (std::abs(glm::dot(glm::normalize(lightDir), up)) > 0.99f) {
@@ -305,11 +301,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         descriptor_sets_ = std::move(other.descriptor_sets_);
         vert_shader_module_ = other.vert_shader_module_;
         frag_shader_module_ = other.frag_shader_module_;
-        framebuffers_ = std::move(other.framebuffers_);
-        color_images_ = std::move(other.color_images_);
-        depth_images_ = std::move(other.depth_images_);
-        color_image_views_ = std::move(other.color_image_views_);
-        depth_image_views_ = std::move(other.depth_image_views_);
         render_fence_ = std::move(other.render_fence_);
         staging_buffers_ = std::move(other.staging_buffers_);
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
@@ -1470,6 +1461,8 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
     return true;
 }
 
+/**  NOTE: now invalid for have not done adjust for shadow and framebuffer
+*/
 bool BatchRenderer::RecordCommandBuffers(int count) {
     Device &dev = *device_;
     VkCommandBuffer cmd = command_buffer_;
@@ -1485,7 +1478,7 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
         
         VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         renderPassInfo.renderPass = render_context_->renderPass;
-        renderPassInfo.framebuffer = framebuffers_[i];
+        renderPassInfo.framebuffer = framebuffer_;
         renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
         
         std::array<VkClearValue, 2> clearValues{};
@@ -1750,53 +1743,65 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     int culled_instances = 0;
     // ---------------------------
 
-    for (int i = count - 1; i >= 0; --i) {
-        const EnvRenderSlot& slot = slots[i];
-        // =========================================================================
-        // STEP A: SHADOW PASS (Render Once per Environment)
-        // =========================================================================
-        {
-            VkRenderPassBeginInfo shadowPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-            shadowPassInfo.renderPass = render_context_->shadowPass; // Defined in CreateShadowResources
-            shadowPassInfo.framebuffer = shadow_framebuffers_[i]; // One per env
-            shadowPassInfo.renderArea.extent = {SHADOW_MAP_DIM, SHADOW_MAP_DIM};
-            
-            VkClearValue clearDepth = {1.0f, 0};
-            shadowPassInfo.clearValueCount = 1;
-            shadowPassInfo.pClearValues = &clearDepth;
+    /**  TODO: now use envs numbers of shadowpass and 3*envs numbers of main renderpass
+    *          they are all serial, so we should just use one renderpass for all shadows
+    *          and one for all main passes, using set viewport and scissor to switch between
+    *          different envs/cameras.
+    */
 
-            dev.dt.cmdBeginRenderPass(cmd, &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+    // =========================================================================
+    // STEP A: SHADOW PASS (Single Atlas Pass)
+    // =========================================================================
+    {
+        // 1. Calculate Shadow Atlas Layout
+        // Must match logic in CreateShadowResources
+        int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
+        int shadow_rows = std::ceil((float)config_.batch_size / shadow_cols);
+        uint32_t atlas_w = shadow_cols * SHADOW_MAP_DIM;
+        uint32_t atlas_h = shadow_rows * SHADOW_MAP_DIM;
 
-            // Viewport for Shadow Map (Usually square, e.g., 2048x2048)
-            VkViewport vp = {0.0f, 0.0f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.0f, 1.0f};
-            dev.dt.cmdSetViewport(cmd, 0, 1, &vp);
-            VkRect2D sc = {{0, 0}, {SHADOW_MAP_DIM, SHADOW_MAP_DIM}};
-            dev.dt.cmdSetScissor(cmd, 0, 1, &sc);
+        VkRenderPassBeginInfo shadowPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+        shadowPassInfo.renderPass = render_context_->shadowPass;
+        shadowPassInfo.framebuffer = shadow_framebuffer_; // [CHANGE] Single Atlas FB
+        shadowPassInfo.renderArea.extent = {atlas_w, atlas_h};
 
-            // Bind Global Vertex Buffers
-            if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
-                VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-                vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+        VkClearValue clearDepth = {1.0f, 0};
+        shadowPassInfo.clearValueCount = 1;
+        shadowPassInfo.pClearValues = &clearDepth;
 
-                // Draw All Geoms for Shadow (Simplified: No Culling for Shadow Caster)
-                // Note: Realistically you should cull objects that don't cast shadows
+        // Start Pass ONCE
+        dev.dt.cmdBeginRenderPass(cmd, &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+
+        // Bind Global Vertex Buffers ONCE
+        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
+            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+            // Loop over environments inside the pass
+            for (int i = 0; i < count; ++i) {
+                const EnvRenderSlot& slot = slots[i];
+
+                // Calculate Viewport Offset
+                int grid_x = i % shadow_cols;
+                int grid_y = i / shadow_cols;
+                float vp_x = grid_x * (float)SHADOW_MAP_DIM;
+                float vp_y = grid_y * (float)SHADOW_MAP_DIM;
+
+                VkViewport vp = {vp_x, vp_y, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.0f, 1.0f};
+                dev.dt.cmdSetViewport(cmd, 0, 1, &vp);
+                VkRect2D sc = {{ (int32_t)vp_x, (int32_t)vp_y }, {SHADOW_MAP_DIM, SHADOW_MAP_DIM}};
+                dev.dt.cmdSetScissor(cmd, 0, 1, &sc);
+
+                // Draw Geoms for this shadow map
                 int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+                glm::mat4 lightViewProj = cached_shadow_matrices_[i];
+
                 for (int g = 0; g < active_geoms; ++g) {
                     const ShmGeom& geom = slot.geoms[g];
-                    
-                    // Reconstruct Model Matrix (Same logic as main pass)
-                    // ... (Include your matrix reconstruction code here) ...
-                    glm::mat4 model_mat = ComputeModelMatrix(geom); // [Helper you should extract]
-
-                    // Push Constants for Shadow Shader
-                    // Assuming Shadow Shader only needs: vec4 lightProj * lightView * model * position
-                    // We need to pass [LightViewProj] and [Model].
-                    // Or pre-multiply them on CPU: MVP = LightViewProj * Model
-                    
-                    glm::mat4 lightViewProj = cached_shadow_matrices_[i];
+                    glm::mat4 model_mat = ComputeModelMatrix(geom);
 
                     PushConstantsShadow pc_shadow{};
                     pc_shadow.mvp = lightViewProj * model_mat; 
@@ -1804,15 +1809,15 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                     dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstantsShadow), &pc_shadow);
 
-                    // Find Mesh Entry
                     auto it = global_mesh_cache_.find(GetMeshName(geom, models_[i]));
                     if (it != global_mesh_cache_.end()) {
-                         vkCmdDrawIndexed(cmd, it->second.index_count, 1, it->second.index_offset, it->second.vertex_offset, 0);
+                        vkCmdDrawIndexed(cmd, it->second.index_count, 1, it->second.index_offset, it->second.vertex_offset, 0);
                     }
                 }
             }
-            dev.dt.cmdEndRenderPass(cmd);
         }
+        dev.dt.cmdEndRenderPass(cmd);
+    }
 
         // STEP B: BARRIER (Wait for Shadow Map Write to Finish)
         {
@@ -1821,7 +1826,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // Or Undefined if using LOAD_OP_CLEAR and not caring
             barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampler
-            barrier.image = shadow_images_[i].image;
+            barrier.image = shadow_image_->image;
             barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
             barrier.subresourceRange.levelCount = 1;
             barrier.subresourceRange.layerCount = 1;
@@ -1832,18 +1837,21 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                 0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
 
-        // STEP C: MAIN RENDER PASSES (Loop over Cameras)
-        for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
-            int resource_idx = i * SHM_NUM_CAMERAS + c;
-
-            // Retrieve Culling Info
-            const auto& cull_info = camera_cull_info_[resource_idx];
-
-            
+        // =========================================================================
+        // STEP C: MAIN RENDER PASS (Single Atlas Pass)
+        // =========================================================================
+        {
+            // 1. Calculate Main Atlas Layout
+            int total_views = config_.batch_size * SHM_NUM_CAMERAS;
+            int main_cols = std::ceil(std::sqrt((float)total_views));
+            int main_rows = std::ceil((float)total_views / main_cols);
+            uint32_t atlas_w = main_cols * config_.frame_width;
+            uint32_t atlas_h = main_rows * config_.frame_height;
+        
             VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
             renderPassInfo.renderPass = render_context_->renderPass;
-            renderPassInfo.framebuffer = framebuffers_[resource_idx];
-            renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
+            renderPassInfo.framebuffer = framebuffer_; // [CHANGE] Single Atlas FB
+            renderPassInfo.renderArea.extent = {atlas_w, atlas_h};
             
             std::array<VkClearValue, 2> clearValues{};
             clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
@@ -1855,148 +1863,129 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
             
             // --- 2. Bind Pipeline & Global State ---
             dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-            
-            VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-            dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-            VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-            dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
 
-            // Bind Descriptor Sets (UBOs + Textures)
-            std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
-            dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                         0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-
-            // --- 3. Bind Global Vertex/Index Buffers ---
+            // Bind Vertices ONCE
             if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
                 VkBuffer vbs[] = { global_vertex_buffer_->buffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
                 vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
 
-                // --- 4. Iteration over SHM Geoms ---
-                int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
-                
-                for (int g = 0; g < active_geoms; ++g) {
-                    const ShmGeom& geom = slot.geoms[g];
+                // Loop Envs
+                for (int i = 0; i < count; ++i) {
+                    const EnvRenderSlot& slot = slots[i];
 
-                    total_instances++;
+                    // Loop Cameras
+                    for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
+                        int resource_idx = i * SHM_NUM_CAMERAS + c;
+
+                        // Calculate Viewport Offset for this Camera
+                        int grid_x = resource_idx % main_cols;
+                        int grid_y = resource_idx / main_cols;
+                        float vp_x = grid_x * (float)config_.frame_width;
+                        float vp_y = grid_y * (float)config_.frame_height;
+
+                        VkViewport viewport = {vp_x, vp_y, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+                        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+                        VkRect2D scissor = {{ (int32_t)vp_x, (int32_t)vp_y }, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+                        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+
+                        // Re-bind Descriptor Sets for this camera (UBOs are per-camera/slot)
+                        std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
+                        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                                0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+                        // Draw Geometry (with Culling)
+                        const auto& cull_info = camera_cull_info_[resource_idx];
+                        int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+
+                        for (int g = 0; g < active_geoms; ++g) {
+                            const ShmGeom& geom = slot.geoms[g];
+                            total_instances++;
+
+                            std::string mesh_name = GetMeshName(geom, models_[i]);
+                            auto it = global_mesh_cache_.find(mesh_name);
+                            if (it == global_mesh_cache_.end()) continue;
+                            const MeshEntry& entry = it->second;
+
+                            // Culling
+                            auto it2 = global_aabb_cache_.find(mesh_name);
+                            if (it2 == global_aabb_cache_.end()) continue;
+                            if (it2 != global_aabb_cache_.end()) {
+                                const AABB& local_aabb = it2->second;
+                                glm::mat4 model_mat = ComputeModelMatrix(geom);
+                                // 1. Calculate World Space AABB
+                                // Transform Center
+                                glm::vec3 local_center = (glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z) + 
+                                                        glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z)) * 0.5f;
+                                glm::vec3 local_extent = (glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z) - 
+                                                        glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z)) * 0.5f;
+                                                        
+                                glm::vec3 world_center = glm::vec3(model_mat * glm::vec4(local_center, 1.0f));
+                                
+                                // Transform Extent (using absolute rotation matrix to bound the rotated box)
+                                glm::vec3 world_extent;
+                                for (int k = 0; k < 3; k++) {
+                                    world_extent[k] = 
+                                        std::abs(model_mat[0][k]) * local_extent.x +
+                                        std::abs(model_mat[1][k]) * local_extent.y +
+                                        std::abs(model_mat[2][k]) * local_extent.z;
+                                }
                     
-                    // [A] Determine Mesh Name from Type/DataID
-                    std::string mesh_name = GetMeshName(geom, models_[i]);
-
-                    // [B] Lookup in Cache
-                    auto it = global_mesh_cache_.find(mesh_name);
-                    if (it == global_mesh_cache_.end()) continue;
-                    const MeshEntry& entry = it->second;
-
-                    auto it2 = global_aabb_cache_.find(mesh_name);
-                    if (it2 == global_aabb_cache_.end()) continue;
-                    const AABB& local_aabb = it2->second; // This is the AABB in Local Space (cached)
-
-
-                    // [C] Construct Model Matrix
-                    // SHM provides 3x3 Rotation (row-major 9 floats) and Pos (3 floats)
-                    glm::mat4 model_mat = ComputeModelMatrix(geom);
-                    // --- CULLING LOGIC ---
+                                glm::vec3 world_min = world_center - world_extent;
+                                glm::vec3 world_max = world_center + world_extent;
                     
-                    // 1. Calculate World Space AABB
-                    // Transform Center
-                    glm::vec3 local_center = (glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z) + 
-                                              glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z)) * 0.5f;
-                    glm::vec3 local_extent = (glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z) - 
-                                              glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z)) * 0.5f;
-                                              
-                    glm::vec3 world_center = glm::vec3(model_mat * glm::vec4(local_center, 1.0f));
-                    
-                    // Transform Extent (using absolute rotation matrix to bound the rotated box)
-                    glm::vec3 world_extent;
-                    for (int k = 0; k < 3; k++) {
-                        world_extent[k] = 
-                            std::abs(model_mat[0][k]) * local_extent.x +
-                            std::abs(model_mat[1][k]) * local_extent.y +
-                            std::abs(model_mat[2][k]) * local_extent.z;
-                    }
-
-                    glm::vec3 world_min = world_center - world_extent;
-                    glm::vec3 world_max = world_center + world_extent;
-
-                    // 2. Perform Frustum Check
-                    // 
-                    if (!IsAABBVisible(cull_info.frustum, world_min, world_max)) {
-                        culled_instances++; // Log: It was culled
-                        continue; // SKIP DRAW CALL
-                    }
-                    // ---------------------
-
-                    // If we get here, it will be drawn
-                    drawn_instances++;
-                    
-                    // [D] Push Constants
-                    PushConstants pc{};
-                    pc.model = model_mat;
-                    pc.rgba = glm::vec4(geom.rgba[0], geom.rgba[1], geom.rgba[2], geom.rgba[3]);
-                    pc.specular = geom.specular;
-                    pc.emission = geom.emission;
-                    pc.shininess = geom.shininess;
-                    pc.reflectance = geom.reflectance;
-
-                    // [MODIFIED] Map matid -> texid -> global lookup
-                    int resolved_tex_id = -1;
-                    
-                    // 1. Resolve matid -> texid
-                    if (geom.matid >= 0) {
-                        resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
-                    }
-                    // 2. Global Lookup
-                    if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
-                        int global_tex_id = texture_offsets_[i] + resolved_tex_id;
-                        
-                        if (global_tex_id < material_textures_.global_texture_lookup.size()) {
-                            const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                            
-                            // Valid texture found?
-                            if (tex_map.index_in_array >= 0) {
-                                pc.texture_type = tex_map.type;
-                                pc.texture_index = tex_map.index_in_array;
-                            } else {
-                                // Fallback if texture failed to load (index -1)
-                                pc.texture_type = -1;
-                                pc.texture_index = -1;
+                                // 2. Perform Frustum Check
+                                // 
+                                if (!IsAABBVisible(cull_info.frustum, world_min, world_max)) {
+                                    culled_instances++; // Log: It was culled
+                                    continue; // SKIP DRAW CALL
+                                }
                             }
-                        } else {
-                            pc.texture_type = -1;
-                            pc.texture_index = -1;
+                            drawn_instances++;
+
+                            int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
+                            int shadow_row_idx = i / shadow_cols; // i is env index
+                            int shadow_col_idx = i % shadow_cols;
+
+                            float shadow_scale = 1.0f / (float)shadow_cols;
+                            float shadow_offset_x = (float)shadow_col_idx * shadow_scale;
+                            float shadow_offset_y = (float)shadow_row_idx * shadow_scale;
+
+                            // Push Constants
+                            PushConstants pc{};
+                            pc.model = ComputeModelMatrix(geom);
+                            pc.rgba = glm::vec4(geom.rgba[0], geom.rgba[1], geom.rgba[2], geom.rgba[3]);
+                            pc.specular = geom.specular;
+                            pc.emission = geom.emission;
+                            pc.shininess = geom.shininess;
+                            pc.reflectance = geom.reflectance;
+                            pc.shadow_atlas_params = glm::vec4(shadow_offset_x, shadow_offset_y, shadow_scale, 0.0f);
+                            
+                            // Texture Lookup (Same as before)
+                            int resolved_tex_id = -1;
+                            if (geom.matid >= 0) resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
+                            
+                            if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
+                                int global_tex_id = texture_offsets_[i] + resolved_tex_id;
+                                if (global_tex_id < material_textures_.global_texture_lookup.size()) {
+                                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
+                                    pc.texture_type = tex_map.index_in_array >= 0 ? tex_map.type : -1;
+                                    pc.texture_index = tex_map.index_in_array;
+                                } else { pc.texture_type = -1; pc.texture_index = -1; }
+                            } else { pc.texture_type = -1; pc.texture_index = -1; }
+
+                            dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
+                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pc);
+
+                            vkCmdDrawIndexed(cmd, entry.index_count, 1, entry.index_offset, entry.vertex_offset, 0);
                         }
-                    } else {
-                        pc.texture_type = -1;
-                        pc.texture_index = -1;
                     }
-
-                    dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                        0, sizeof(PushConstants), &pc);
-
-                    vkCmdDrawIndexed(cmd, entry.index_count, 1, entry.index_offset, entry.vertex_offset, 0);
                 }
             }
-
             dev.dt.cmdEndRenderPass(cmd);
-
         }
-    }
     REQ_VK(dev.dt.endCommandBuffer(cmd));
-
-    // --- PRINT STATISTICS ---
-    // NOTE: This will print every time Record is called. For high FPS, consider wrapping this in a timer.
-    // if (total_instances > 0) {
-    //     float cull_percentage = (static_cast<float>(culled_instances) / total_instances) * 100.0f;
-    //     std::cout << "[BatchRenderer] Culling Stats: "
-    //               << "Total: " << total_instances << " | "
-    //               << "Drawn: " << drawn_instances << " | "
-    //               << "Culled: " << culled_instances << " ("
-    //               << cull_percentage << "%)" << std::endl;
-    // }
-    // ------------------------
     
     return true;
 }
@@ -2057,9 +2046,11 @@ bool BatchRenderer::ReadbackResults() {
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
 
-    // --- 2. Record Commands for ALL batches ---
-    for (int i = 0; i < total_slots; ++i) {
-        // A. Barrier: Color Attachment -> Transfer Src
+    // [NEW] Calculate Grid Layout for Readback
+    int cols = std::ceil(std::sqrt((float)total_slots));
+
+    // --- 2. Global Barrier: Color Atlas -> Transfer Src (ONCE) ---
+    {
         VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -2067,7 +2058,7 @@ bool BatchRenderer::ReadbackResults() {
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = color_images_[i].image;
+        barrier.image = color_image_->image; // [CHANGE] Use Single Atlas Image
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
@@ -2078,6 +2069,17 @@ bool BatchRenderer::ReadbackResults() {
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, nullptr, 0, nullptr, 1, &barrier);
+   }
+
+    // --- 3. Loop Copy Regions ---
+    for (int i = 0; i < total_slots; ++i) {
+        // B. Copy Image -> Staging Buffer
+        // Calculate Offset in Atlas
+        int grid_x = i % cols;
+        int grid_y = i / cols;
+        int32_t offset_x = grid_x * config_.frame_width;
+        int32_t offset_y = grid_y * config_.frame_height;
+
 
         // B. Copy Image -> Staging Buffer
         VkBufferImageCopy region = {};
@@ -2088,24 +2090,36 @@ bool BatchRenderer::ReadbackResults() {
         region.imageSubresource.mipLevel = 0;
         region.imageSubresource.baseArrayLayer = 0;
         region.imageSubresource.layerCount = 1;
-        region.imageOffset = {0, 0, 0};
+        region.imageOffset = {offset_x, offset_y, 0};
         region.imageExtent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height, 1};
 
-        dev.dt.cmdCopyImageToBuffer(cmd, color_images_[i].image,
+        dev.dt.cmdCopyImageToBuffer(cmd, color_image_->image, // [CHANGE] Copy from Atlas
                                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                    staging_buffers_[i].buffer, 1, &region);
+                                staging_buffers_[i].buffer, 1, &region);
+    }
 
-        // C. Barrier: Transfer Src -> Color Attachment (Restore layout for next frame)
+    // --- 4. Global Barrier: Transfer Src -> Color Attachment (Restore Atlas) ---
+    {
+        VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = color_image_->image; // [CHANGE] Use Single Atlas Image
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
 
         dev.dt.cmdPipelineBarrier(cmd,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
+
     // --- 3. End & Submit ---
     REQ_VK(dev.dt.endCommandBuffer(cmd));
 
@@ -2457,70 +2471,70 @@ bool BatchRenderer::CreateFramebuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
 
-    size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
+    // 1. Calculate Atlas Dimensions (Grid Layout)
+    // We need to fit (BatchSize * Cameras) views into one texture.
+    int total_views = config_.batch_size * SHM_NUM_CAMERAS;
     
-    framebuffers_.reserve(total_slots);
-    color_images_.reserve(total_slots);
-    depth_images_.reserve(total_slots);
-    color_image_views_.reserve(total_slots);
-    depth_image_views_.reserve(total_slots);
+    // Calculate grid columns and rows to make it roughly square
+    int cols = std::ceil(std::sqrt((float)total_views));
+    int rows = std::ceil((float)total_views / cols);
+
+    uint32_t total_width = cols * config_.frame_width;
+    uint32_t total_height = rows * config_.frame_height;
     
-    for (int i = 0; i < total_slots; ++i) {
-        // Create color image
-        auto color_img = allocator.makeColorAttachment(
-            config_.frame_width, config_.frame_height, 1, VK_FORMAT_R8G8B8A8_UNORM);
-        color_images_.push_back(std::move(color_img));
-        
-        // Create depth image
-        if (config_.enable_depth) {
-            auto depth_img = allocator.makeDepthAttachment(
-                config_.frame_width, config_.frame_height, 1, VK_FORMAT_D32_SFLOAT);
-            depth_images_.push_back(std::move(depth_img));
-        }
-        
-        // Create image views
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = color_images_[i].image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        VkImageView colorView;
-        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &colorView));
-        color_image_views_.push_back(colorView);
-        
-        VkImageView depthView = VK_NULL_HANDLE;
-        if (config_.enable_depth) {
-            viewInfo.image = depth_images_[i].image;
-            viewInfo.format = VK_FORMAT_D32_SFLOAT;
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depthView));
-        }
-        depth_image_views_.push_back(depthView);
-        
-        // Create framebuffer
-        std::vector<VkImageView> attachments = {color_image_views_[i]};
-        if (config_.enable_depth && depth_image_views_[i] != VK_NULL_HANDLE) {
-            attachments.push_back(depth_image_views_[i]);
-        }
-        
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = render_context_->renderPass;
-        framebufferInfo.attachmentCount = attachments.size();
-        framebufferInfo.pAttachments = attachments.data();
-        framebufferInfo.width = config_.frame_width;
-        framebufferInfo.height = config_.frame_height;
-        framebufferInfo.layers = 1;
-        
-        REQ_VK(dev.dt.createFramebuffer(dev.hdl, &framebufferInfo, nullptr, &framebuffers_[i]));
+    // Store atlas layout info if needed, or recalculate in Record. 
+    // Ideally, store 'atlas_cols_' in class, but we calculate locally for now.
+
+    // 2. Create Single Large Color Image
+    color_image_.emplace(allocator.makeColorAttachment(
+        total_width, total_height, 1, VK_FORMAT_R8G8B8A8_UNORM));
+
+    // 3. Create Single Large Depth Image
+    if (config_.enable_depth) {
+        depth_image_.emplace(allocator.makeDepthAttachment(
+            total_width, total_height, 1, VK_FORMAT_D32_SFLOAT));
     }
-    
-    LOG(config_, "CreateFramebuffers(): framebuffers created");
+
+    // 4. Create Image Views
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    // Color View
+    viewInfo.image = color_image_->image;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &color_image_view_));
+
+    // Depth View
+    if (config_.enable_depth) {
+        viewInfo.image = depth_image_->image;
+        viewInfo.format = VK_FORMAT_D32_SFLOAT;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depth_image_view_));
+    }
+
+    // 5. Create Single Large Framebuffer
+    std::vector<VkImageView> attachments = {color_image_view_};
+    if (config_.enable_depth && depth_image_view_ != VK_NULL_HANDLE) {
+        attachments.push_back(depth_image_view_);
+    }
+
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = render_context_->renderPass;
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    framebufferInfo.pAttachments = attachments.data();
+    framebufferInfo.width = total_width;
+    framebufferInfo.height = total_height;
+    framebufferInfo.layers = 1;
+
+    REQ_VK(dev.dt.createFramebuffer(dev.hdl, &framebufferInfo, nullptr, &framebuffer_));
+
     return true;
 }
 
@@ -2659,11 +2673,9 @@ bool BatchRenderer::CreateBuffers() {
         writes[1].descriptorCount = 1;
         writes[1].pBufferInfo = &lightBufferInfo;
 
-        int env_idx = i / SHM_NUM_CAMERAS;
-
         VkDescriptorImageInfo shadowInfo{};
         shadowInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        shadowInfo.imageView = shadow_image_views_[env_idx]; // Use the env's shadow map
+        shadowInfo.imageView = shadow_image_view_; // Use the env's shadow map
         shadowInfo.sampler = shadow_sampler_;
 
         writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2763,12 +2775,16 @@ bool BatchRenderer::CreateBuffers() {
 bool BatchRenderer::CreateShadowResources() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
-    size_t count = config_.batch_size; // One shadow map per environment
-
-    shadow_images_.reserve(count);
-    shadow_image_views_.reserve(count);
-    shadow_framebuffers_.reserve(count);
+    // We strictly assume one shadow map per environment (batch_size)
+    size_t count = config_.batch_size; 
     cached_shadow_matrices_.resize(count);
+
+    // 1. Calculate Shadow Atlas Dimensions
+    int cols = std::ceil(std::sqrt((float)count));
+    int rows = std::ceil((float)count / cols);
+    
+    uint32_t total_width = cols * SHADOW_MAP_DIM;
+    uint32_t total_height = rows * SHADOW_MAP_DIM;
 
     // 1. Create Shadow Render Pass
     VkAttachmentDescription attachmentDescription{};
@@ -2823,44 +2839,33 @@ bool BatchRenderer::CreateShadowResources() {
     // 2. Create Sampler (Shadow Sampler with PCF support usually requires logic in shader, here strictly linear/nearest)
     shadow_sampler_ = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
 
-    // 3. Create Images and Framebuffers
-    for (size_t i = 0; i < count; ++i) {
-        // Image
-        auto depth_img = allocator.makeDepthAttachment(SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1, VK_FORMAT_D32_SFLOAT);
-        
-        // View
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depth_img.image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_D32_SFLOAT;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        
-        VkImageView depthView;
-        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depthView));
+    // 4. Create Single Large Shadow Image
+    shadow_image_.emplace(allocator.makeDepthAttachment(total_width, total_height, 1, VK_FORMAT_D32_SFLOAT));
 
-        // Framebuffer
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = render_context_->shadowPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &depthView;
-        fbInfo.width = SHADOW_MAP_DIM;
-        fbInfo.height = SHADOW_MAP_DIM;
-        fbInfo.layers = 1;
+    // 5. Create View
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = shadow_image_->image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_D32_SFLOAT;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &shadow_image_view_));
 
-        VkFramebuffer fb;
-        REQ_VK(dev.dt.createFramebuffer(dev.hdl, &fbInfo, nullptr, &fb));
+    // 6. Create Single Large Framebuffer
+    VkFramebufferCreateInfo fbInfo{};
+    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbInfo.renderPass = render_context_->shadowPass;
+    fbInfo.attachmentCount = 1;
+    fbInfo.pAttachments = &shadow_image_view_;
+    fbInfo.width = total_width;
+    fbInfo.height = total_height;
+    fbInfo.layers = 1;
 
-        shadow_images_.push_back(std::move(depth_img));
-        shadow_image_views_.push_back(depthView);
-        shadow_framebuffers_.push_back(fb);
-    }
-    
+    REQ_VK(dev.dt.createFramebuffer(dev.hdl, &fbInfo, nullptr, &shadow_framebuffer_));
     return true;
 }
 
@@ -3035,7 +3040,6 @@ void BatchRenderer::DestroyVulkanResources() {
         dev.dt.destroyDescriptorPool(dev.hdl, global_texture_descriptor_pool, nullptr);
     }
 
-
     if (vert_shader_module_ != VK_NULL_HANDLE) {
         dev.dt.destroyShaderModule(dev.hdl, vert_shader_module_, nullptr);
         vert_shader_module_ = VK_NULL_HANDLE;
@@ -3044,44 +3048,17 @@ void BatchRenderer::DestroyVulkanResources() {
         dev.dt.destroyShaderModule(dev.hdl, frag_shader_module_, nullptr);
         frag_shader_module_ = VK_NULL_HANDLE;
     }
-    
 
     if (graphics_pipeline_ != VK_NULL_HANDLE) {
         dev.dt.destroyPipeline(dev.hdl, graphics_pipeline_, nullptr);
         graphics_pipeline_ = VK_NULL_HANDLE;
     }
-    
 
     if (pipeline_layout_ != VK_NULL_HANDLE) {
         dev.dt.destroyPipelineLayout(dev.hdl, pipeline_layout_, nullptr);
         pipeline_layout_ = VK_NULL_HANDLE;
     }
-    
-    for (auto &fb : framebuffers_) {
-        if (fb != VK_NULL_HANDLE) {
-            dev.dt.destroyFramebuffer(dev.hdl, fb, nullptr);
-        }
-    }
-    framebuffers_.clear();
-    
-    for (auto &view : color_image_views_) {
-        if (view != VK_NULL_HANDLE) {
-            dev.dt.destroyImageView(dev.hdl, view, nullptr);
-        }
-    }
-    color_image_views_.clear();
-    
-    for (auto &view : depth_image_views_) {
-        if (view != VK_NULL_HANDLE) {
-            dev.dt.destroyImageView(dev.hdl, view, nullptr);
-        }
-    }
-    depth_image_views_.clear();
-    
-    // Images are destroyed via LocalImage destructors
-    color_images_.clear();
-    depth_images_.clear();
-    
+
     // Destroy fences
     if(render_fence_ != VK_NULL_HANDLE) {
         dev.dt.destroyFence(dev.hdl, render_fence_, nullptr);
@@ -3096,9 +3073,45 @@ void BatchRenderer::DestroyVulkanResources() {
     
     dev.dt.destroySampler(dev.hdl, shadow_sampler_, nullptr);
 
-    shadow_framebuffers_.clear();
-    shadow_images_.clear();
-    shadow_image_views_.clear();
+    // [New] Clean up Main Render Pass Resources (Atlas)
+    if (framebuffer_ != VK_NULL_HANDLE) {
+        dev.dt.destroyFramebuffer(dev.hdl, framebuffer_, nullptr);
+        framebuffer_ = VK_NULL_HANDLE;
+    }
+
+    if (color_image_view_ != VK_NULL_HANDLE) {
+        dev.dt.destroyImageView(dev.hdl, color_image_view_, nullptr);
+        color_image_view_ = VK_NULL_HANDLE;
+    }
+    if (depth_image_view_ != VK_NULL_HANDLE) {
+        dev.dt.destroyImageView(dev.hdl, depth_image_view_, nullptr);
+        depth_image_view_ = VK_NULL_HANDLE;
+    }
+
+    // Clean up Main Images (std::optional)
+    if (color_image_.has_value()) {
+        color_image_.reset();
+    }
+
+    if (depth_image_.has_value()) {
+        depth_image_.reset();
+    }
+
+    // [New] Clean up Shadow Pass Resources (Atlas)
+    if (shadow_framebuffer_ != VK_NULL_HANDLE) {
+        dev.dt.destroyFramebuffer(dev.hdl, shadow_framebuffer_, nullptr);
+        shadow_framebuffer_ = VK_NULL_HANDLE;
+    }
+
+    if (shadow_image_view_ != VK_NULL_HANDLE) {
+        dev.dt.destroyImageView(dev.hdl, shadow_image_view_, nullptr);
+        shadow_image_view_ = VK_NULL_HANDLE;
+    }
+
+    if (shadow_image_.has_value()) {
+        shadow_image_.reset();
+    }
+    
     
     LOG(config_, "DestroyVulkanResources(): resources released");
 }

@@ -237,7 +237,9 @@ struct PushConstants {
     float reflectance;        // 4 bytes
     int texture_index;          // 原 texture_id (表示在对应数组中的下标)
     int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
-    int pad[2];               // Padding to 16 bytes
+    // [NEW] Must match HLSL alignment
+    // OffsetX, OffsetY, Scale, Padding
+    glm::vec4 shadow_atlas_params;
 };
 
 struct PushConstantsShadow {
@@ -494,16 +496,17 @@ private:
     // Framebuffers and images for batch rendering
     // TODO: use the meta Framebuffer 
     // TODO: fill the FrameBuffer with scenes * views (batch_size * 3) 
-    std::vector<VkFramebuffer> framebuffers_;
-    std::vector<mujoco::mjbatch::LocalImage> color_images_;
-    std::vector<mujoco::mjbatch::LocalImage> depth_images_;
-    std::vector<VkImageView> color_image_views_;
-    std::vector<VkImageView> depth_image_views_;
 
-    // [ADD] Shadow map resources
-    std::vector<VkFramebuffer> shadow_framebuffers_;
-    std::vector<mujoco::mjbatch::LocalImage> shadow_images_;
-    std::vector<VkImageView> shadow_image_views_;
+    VkFramebuffer framebuffer_;
+    std::optional<mujoco::mjbatch::LocalImage> color_image_;
+    std::optional<mujoco::mjbatch::LocalImage> depth_image_;
+    VkImageView color_image_view_;
+    VkImageView depth_image_view_;
+
+    VkFramebuffer shadow_framebuffer_;
+    std::optional<mujoco::mjbatch::LocalImage> shadow_image_;
+    VkImageView shadow_image_view_;
+
     VkSampler shadow_sampler_;
 
     VkFence render_fence_;

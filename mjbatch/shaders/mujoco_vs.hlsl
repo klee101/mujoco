@@ -45,7 +45,7 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
-    float2 padding;
+    float4 shadow_atlas_params;
 };
 
 [[vk::push_constant]]

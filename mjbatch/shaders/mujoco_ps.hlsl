@@ -49,7 +49,7 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
-    float2 padding_pc;
+    float4 shadow_atlas_params;
 };
 
 [[vk::push_constant]]
@@ -250,31 +250,59 @@ static const float2 poissonDisk[16] = {
 };
 
 // [MODIFIED] Shadow Calculation utilizing Poisson Sampling
+// [MODIFIED] Shadow Calculation utilizing Poisson Sampling AND Atlas Remapping
 float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir) {
     float3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    projCoords.x = projCoords.x * 0.5 + 0.5;
-    projCoords.y = projCoords.y * 0.5 + 0.5;
     
-    // 边界检查
-    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
+    // 1. Transform to [0,1] range (Local UV)
+    // 这是在当前那个小 Shadow Map 里的相对坐标
+    float2 localUV;
+    localUV.x = projCoords.x * 0.5 + 0.5;
+    localUV.y = projCoords.y * 0.5 + 0.5;
+    
+    // 2. Atlas Remapping (Local UV -> Atlas UV)
+    // AtlasUV = LocalUV * Scale + Offset
+    float2 atlasUV = localUV * pushConst.shadow_atlas_params.z + pushConst.shadow_atlas_params.xy;
+
+    // 3. Depth Comparison
+    // 注意：projCoords.z 不需要缩放，因为深度值在 Atlas 里是不变的
+    float currentDepth = projCoords.z;
+
+    // 边界检查 (Check against Local UV boundaries, not Atlas boundaries)
+    // 如果 localUV 超出了 0~1，说明这个点在灯光视锥体外面
+    if (currentDepth > 1.0 || localUV.x < 0.0 || localUV.x > 1.0 || localUV.y < 0.0 || localUV.y > 1.0)
         return 0.0;
 
     float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
     float shadow = 0.0;
     
-    // [FIX] 不要硬编码尺寸，使用 GetDimensions
+    // Get full atlas dimensions
     float width, height;
     g_shadowMap.GetDimensions(width, height);
     float2 texelSize = 1.0 / float2(width, height);
 
-    // 泊松采样循环
-    // "diskRadius" 控制阴影软边缘的宽度。值越大越软，但也可能越“飘”
+    // 
+    // Visualization:
+    // | Env0 | Env1 | ...
+    // | EnvN | ...  |
+    // We must clamp our sampling to stay inside Env X's box to avoid bleeding artifacts.
+    
+    float2 uvMin = pushConst.shadow_atlas_params.xy;
+    float2 uvMax = pushConst.shadow_atlas_params.xy + pushConst.shadow_atlas_params.z;
+
+    // Poisson Loop
     float diskRadius = 3.0; 
     
     for(int i = 0; i < 16; ++i) {
-        // 使用 poissonDisk 偏移采样
-        float pcfDepth = g_shadowMap.Sample(g_shadowSampler, projCoords.xy + poissonDisk[i] * texelSize * diskRadius).r; 
-        shadow += (projCoords.z - bias > pcfDepth ? 1.0 : 0.0);
+        float2 sampleUV = atlasUV + poissonDisk[i] * texelSize * diskRadius;
+        
+        // [CRITICAL] Clamp sampling to the specific tile to prevent bleeding from neighbor shadows
+        // 这一步非常重要：防止泊松采样采到隔壁环境的阴影去
+        sampleUV.x = clamp(sampleUV.x, uvMin.x + texelSize.x, uvMax.x - texelSize.x);
+        sampleUV.y = clamp(sampleUV.y, uvMin.y + texelSize.y, uvMax.y - texelSize.y);
+
+        float pcfDepth = g_shadowMap.Sample(g_shadowSampler, sampleUV).r; 
+        shadow += (currentDepth - bias > pcfDepth ? 1.0 : 0.0);
     }
     
     return shadow / 16.0;

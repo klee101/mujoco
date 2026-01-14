@@ -163,11 +163,15 @@ int ResolveTextureFromMaterial(const mjModel* m, int matid) {
 }
 
 glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& lightDir) {
-    glm::vec3 center = glm::vec3(0.0f, 0.0f, 0.5f); 
+    glm::vec3 eye = lightPos; 
+
+    printf("Light Position: %s\n", glm_vec3_to_string(lightPos).c_str());
 
     // 2. 确定 View Matrix
-    float dist = 5.0f; 
-    glm::vec3 eye = center - glm::normalize(lightDir) * dist;
+    float dist = 1.0f; 
+    glm::vec3 center = eye + glm::normalize(lightDir) * dist;
+
+    printf("Light Direction: %s\n", glm_vec3_to_string(lightDir).c_str());
 
     glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
     if (std::abs(glm::dot(glm::normalize(lightDir), up)) > 0.99f) {
@@ -177,10 +181,10 @@ glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& light
     glm::mat4 view = glm::lookAt(eye, center, up);
 
     // 3. Projection Matsrix
-    float s = 1.0f;
+    float s = 4.0f;
 
     float frustum_near = 0.01f;
-    float frustum_far = 100.0f;
+    float frustum_far = 10.0f;
     
     glm::mat4 proj = glm::ortho(-s, s, -s, s, frustum_near, frustum_far);
 
@@ -3092,9 +3096,9 @@ void BatchRenderer::DestroyVulkanResources() {
     
     dev.dt.destroySampler(dev.hdl, shadow_sampler_, nullptr);
 
-    for(auto fb : shadow_framebuffers_) dev.dt.destroyFramebuffer(dev.hdl, fb, nullptr);
-    
-    for(auto view : shadow_image_views_) dev.dt.destroyImageView(dev.hdl, view, nullptr);
+    shadow_framebuffers_.clear();
+    shadow_images_.clear();
+    shadow_image_views_.clear();
     
     LOG(config_, "DestroyVulkanResources(): resources released");
 }

@@ -93,8 +93,8 @@ struct PSInput {
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-static const float IBL_INTENSITY = 0.1; 
-static const float EXPOSURE = 1.5;      // 曝光值，配合 Tone Mapping 使用
+static const float IBL_INTENSITY = 0.0; 
+static const float EXPOSURE = 1.0;      // 曝光值，配合 Tone Mapping 使用
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -237,26 +237,47 @@ void CalculateLightContribution(
 }
 
 // Helper to sample shadow map with PCF
+// 在文件顶部定义泊松分布点 (16个采样点)
+static const float2 poissonDisk[16] = {
+   float2( -0.94201624, -0.39906216 ), float2( 0.94558609, -0.76890725 ),
+   float2( -0.09418410, -0.92938870 ), float2( 0.34495938, 0.29387760 ),
+   float2( -0.91588581, 0.45771432 ), float2( -0.81544232, -0.87912464 ),
+   float2( -0.38277543, 0.27676845 ), float2( 0.97484398, 0.75648379 ),
+   float2( 0.44323325, -0.97511554 ), float2( 0.53742981, -0.47371076 ),
+   float2( -0.26496911, -0.41893023 ), float2( 0.79197514, 0.19090188 ),
+   float2( -0.24188840, 0.99706507 ), float2( -0.81409955, 0.91437590 ),
+   float2( 0.19984126, 0.78641367 ), float2( 0.14383161, -0.14100790 )
+};
+
+// [MODIFIED] Shadow Calculation utilizing Poisson Sampling
 float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir) {
     float3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
     projCoords.x = projCoords.x * 0.5 + 0.5;
     projCoords.y = projCoords.y * 0.5 + 0.5;
     
+    // 边界检查
     if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || projCoords.y < 0.0 || projCoords.y > 1.0)
         return 0.0;
 
     float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
     float shadow = 0.0;
-    float2 texelSize = 1.0 / 2048.0; 
     
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = g_shadowMap.Sample(g_shadowSampler, projCoords.xy + float2(x, y) * texelSize).r; 
-            shadow += (projCoords.z - bias > pcfDepth ? 1.0 : 0.0);        
-        }    
+    // [FIX] 不要硬编码尺寸，使用 GetDimensions
+    float width, height;
+    g_shadowMap.GetDimensions(width, height);
+    float2 texelSize = 1.0 / float2(width, height);
+
+    // 泊松采样循环
+    // "diskRadius" 控制阴影软边缘的宽度。值越大越软，但也可能越“飘”
+    float diskRadius = 3.0; 
+    
+    for(int i = 0; i < 16; ++i) {
+        // 使用 poissonDisk 偏移采样
+        float pcfDepth = g_shadowMap.Sample(g_shadowSampler, projCoords.xy + poissonDisk[i] * texelSize * diskRadius).r; 
+        shadow += (projCoords.z - bias > pcfDepth ? 1.0 : 0.0);
     }
-    shadow /= 9.0;
-    return shadow;
+    
+    return shadow / 16.0;
 }
 
 // ============================================================================
@@ -332,19 +353,19 @@ float4 PSMain(PSInput input) : SV_Target {
     // --------------------------------------------------------
     // IBL Contribution
     // --------------------------------------------------------
-    float3 ambientIBL = float3(0,0,0);
+    // float3 ambientIBL = float3(0,0,0);
     
-    // Determine which environment map to use. 
-    // Logic: If the object has a texture of type 1 (EnvMap), use it for IBL.
-    // Ideally, you should pass a 'GlobalSkyboxIndex' in PushConstants if no local env map exists.
-    int envMapIdx = (pushConst.texture_type == 1) ? pushConst.texture_index : 0;
+    // // Determine which environment map to use. 
+    // // Logic: If the object has a texture of type 1 (EnvMap), use it for IBL.
+    // // Ideally, you should pass a 'GlobalSkyboxIndex' in PushConstants if no local env map exists.
+    // int envMapIdx = (pushConst.texture_type == 1) ? pushConst.texture_index : 0;
     
-    if (envMapIdx >= 0) {
-        ambientIBL = IBL_Contribution(N, V, R, base_color.rgb, F0, roughness, metallic, envMapIdx);
-        ambientIBL *= IBL_INTENSITY;
-    } else {
-        ambientIBL = totalAmbient; 
-    }
+    // if (envMapIdx >= 0) {
+    //     ambientIBL = IBL_Contribution(N, V, R, base_color.rgb, F0, roughness, metallic, envMapIdx);
+    //     ambientIBL *= IBL_INTENSITY;
+    // } else {
+    //     ambientIBL = totalAmbient; 
+    // }
 
     // --------------------------------------------------------
     // Final Combination
@@ -352,11 +373,7 @@ float4 PSMain(PSInput input) : SV_Target {
     float3 final_color = totalDiffuse + totalSpecular;
     
     // Replace constant ambient with IBL if available
-    if (envMapIdx >= 0) {
-        final_color += ambientIBL; 
-    } else {
-        final_color += totalAmbient;
-    }
+    final_color += totalAmbient;
 
     final_color += base_color.rgb * pushConst.material_emission;
 
@@ -373,6 +390,7 @@ float4 PSMain(PSInput input) : SV_Target {
     // Tone Mapping & Gamma
     final_color = ACESToneMapping(final_color);
     final_color = pow(final_color, 1.0 / 2.2);
+    final_color *= EXPOSURE;
 
     return float4(final_color, base_color.a);
 }

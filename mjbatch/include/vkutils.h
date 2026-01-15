@@ -1,13 +1,11 @@
 #pragma once
 
-#include <deque>
+
 #include <mutex>
-#include <string>
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
-#include <array>
-
 #include "device.h"
 
 namespace mujoco {
@@ -122,5 +120,4 @@ static inline VkResult checkVk(VkResult res,
 #define FATAL(fmt, ...) ::mujoco::mjbatch::fatal(__FILE__, __LINE__, "", fmt __VA_OPT__(,) __VA_ARGS__)
 
 }} 
-
 #include "vkutils.inl"

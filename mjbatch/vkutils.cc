@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <array>
 
 namespace mujoco {
 namespace mjbatch {

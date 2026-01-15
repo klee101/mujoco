@@ -10,8 +10,10 @@
 #include <cstring>
 #include <cassert>
 #include <algorithm>
+#include <filesystem>
 #include <unistd.h>
 #include <limits.h>
+#include "shared_protocol.h"
 
 using namespace mujoco::mjbatch;
 
@@ -1738,9 +1740,6 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
 
     // --- STATISTICS COUNTERS ---
-    int total_instances = 0;
-    int drawn_instances = 0;
-    int culled_instances = 0;
     // ---------------------------
 
     /**  TODO: now use envs numbers of shadowpass and 3*envs numbers of main renderpass
@@ -1765,7 +1764,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
         shadowPassInfo.framebuffer = shadow_framebuffer_; // [CHANGE] Single Atlas FB
         shadowPassInfo.renderArea.extent = {atlas_w, atlas_h};
 
-        VkClearValue clearDepth = {1.0f, 0};
+        VkClearValue clearDepth = {.depthStencil = {1.0f, 0}};
         shadowPassInfo.clearValueCount = 1;
         shadowPassInfo.pClearValues = &clearDepth;
 
@@ -1901,7 +1900,6 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
 
                         for (int g = 0; g < active_geoms; ++g) {
                             const ShmGeom& geom = slot.geoms[g];
-                            total_instances++;
 
                             std::string mesh_name = GetMeshName(geom, models_[i]);
                             auto it = global_mesh_cache_.find(mesh_name);
@@ -1938,11 +1936,9 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                                 // 2. Perform Frustum Check
                                 // 
                                 if (!IsAABBVisible(cull_info.frustum, world_min, world_max)) {
-                                    culled_instances++; // Log: It was culled
                                     continue; // SKIP DRAW CALL
                                 }
                             }
-                            drawn_instances++;
 
                             int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
                             int shadow_row_idx = i / shadow_cols; // i is env index

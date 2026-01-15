@@ -1,10 +1,9 @@
 #pragma once
 
 #include <vector>
-#include <memory>
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp> // 支持 glm::translate, glm::scale
-#include <glm/gtc/quaternion.hpp>     // 支持 glm::quat, glm::mat4_cast
+#include <glm/gtc/matrix_transform.hpp> 
+#include <glm/gtc/quaternion.hpp>     
 #include <glm/gtc/type_ptr.hpp>       
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>

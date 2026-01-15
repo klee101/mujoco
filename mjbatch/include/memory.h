@@ -1,18 +1,11 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <iostream>
-#include <atomic>
 #include <utility>
 #include <optional>
-#include <deque>
-#include <mutex>
 #include <array>
-#include <string>
 #include <vulkan/vulkan_core.h>
-#include "dispatch.hpp"
 #include "device.h"
-#include "vkutils.h"
 #include "backend.h"
 
 namespace mujoco{

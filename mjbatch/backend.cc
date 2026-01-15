@@ -1,14 +1,12 @@
-#include "render_context.h"
+#include "backend.h"
 
 #include <cstring>
-#include <iostream>
-#include <optional>
 #include <vector>
 #include <assert.h>
 
 #include <dlfcn.h>
 #include <csignal>
-#include <filesystem>
+#include "vkutils.h"
 
 namespace mujoco{
 namespace mjbatch{

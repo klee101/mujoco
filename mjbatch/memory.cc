@@ -1,4 +1,6 @@
 #include "memory.h"
+#include <iostream>
+#include "vkutils.h"
 
 
 namespace mujoco{

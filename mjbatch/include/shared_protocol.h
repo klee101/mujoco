@@ -1,6 +1,7 @@
 // [NEW FILE] shared_protocol.h
 #pragma once
 #include <cstdint>
+#include <glm/glm.hpp>
 
 namespace mujoco {
 namespace mjbatch {

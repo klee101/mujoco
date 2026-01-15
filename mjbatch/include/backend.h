@@ -3,7 +3,6 @@
 #include <vulkan/vulkan.h>
 #include <array>
 #include <span>
-#include "vkutils.h"
 #include "device.h"
 #include "dispatch.hpp"
 

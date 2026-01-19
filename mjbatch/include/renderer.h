@@ -23,6 +23,7 @@
 #include "memory.h"
 #include "scene.h"
 #include "stb_image.h"
+#include "renderdoc_app.h"
 
 #include <nvtx3/nvToolsExt.h> 
 
@@ -240,6 +241,7 @@ struct PushConstants {
     int texture_type;           // 原 _pad1 (-1: None, 0: 2D, 1: Cube)
     // [NEW] Must match HLSL alignment
     // OffsetX, OffsetY, Scale, Padding
+    float paddings[2];      // 8 bytes
     glm::vec4 shadow_atlas_params;
 };
 
@@ -341,9 +343,19 @@ public:
 
     bool IsValid() const { return initialized_; }
 
+    void StartCapture() {
+        if (rdoc_api_) rdoc_api_->StartFrameCapture(NULL, NULL);
+    }
+
+    void EndCapture() {
+        if (rdoc_api_) rdoc_api_->EndFrameCapture(NULL, NULL);
+    }
+
 private:
     BatchRenderer(std::vector<mjModel*> models, const BatchRendererConfig& config);
 
+    RENDERDOC_API_1_1_2 *rdoc_api_ = nullptr;
+    void InitRenderDoc(); // 在构造函数中调用
     /*
     * Initialize - Set up Vulkan instance, device, render context, pipeline, framebuffers, buffers, etc.
     * NOTE: only called once during creation

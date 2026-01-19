@@ -45,6 +45,7 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
+    float2 padding2;
     float4 shadow_atlas_params;
 };
 
@@ -94,6 +95,5 @@ VSOutput VSMain(VSInput input) {
     output.sample_vec = input.position; // For environment mapping
     output.shadow_coord = mul(input_lights[1].view_proj, world_pos);
 
-    
     return output;
 }

@@ -19,7 +19,7 @@
 #include <vector>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
-#include <glm/glm.hpp>
+#include "utils.h"
 
 namespace mujoco {
   namespace mjbatch {

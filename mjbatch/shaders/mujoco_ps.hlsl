@@ -49,6 +49,7 @@ struct PushConstants {
     
     int texture_index;
     int texture_type;
+    float2 padding2;
     float4 shadow_atlas_params;
 };
 
@@ -249,7 +250,6 @@ static const float2 poissonDisk[16] = {
    float2( 0.19984126, 0.78641367 ), float2( 0.14383161, -0.14100790 )
 };
 
-// [MODIFIED] Shadow Calculation utilizing Poisson Sampling
 // [MODIFIED] Shadow Calculation utilizing Poisson Sampling AND Atlas Remapping
 float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir) {
     float3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
@@ -273,7 +273,7 @@ float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir
     if (currentDepth > 1.0 || localUV.x < 0.0 || localUV.x > 1.0 || localUV.y < 0.0 || localUV.y > 1.0)
         return 0.0;
 
-    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
+    float bias = 0.00005;
     float shadow = 0.0;
     
     // Get full atlas dimensions
@@ -413,6 +413,86 @@ float4 PSMain(PSInput input) : SV_Target {
         return float4(ambientIBL, 1.0); 
     #elif DEBUG_VIEW == 4
         return float4(totalSpecular, 1.0); 
+    #endif
+    // ============================================================================
+    // SHADOW DEBUG OUTPUTS
+    // ============================================================================
+    // ============================================================================
+    // ADVANCED SHADOW DEBUG OUTPUTS
+    // ============================================================================
+    
+    // 公共计算：为了保证 Debug 和逻辑一致，提取出完全相同的坐标计算
+    float3 projCoords = input.shadow_coord.xyz / input.shadow_coord.w;
+    
+    // [重要] 保持和 ShadowCalculation 完全一致的 Y 轴处理
+    // 如果你在 ShadowCalculation 里改了 -0.5，这里也要改！
+    float2 localUV_Debug;
+    localUV_Debug.x = projCoords.x * 0.5 + 0.5;
+    localUV_Debug.y = projCoords.y * 0.5 + 0.5; 
+
+    // Atlas 映射
+    float2 atlasUV_Debug = localUV_Debug * pushConst.shadow_atlas_params.z + pushConst.shadow_atlas_params.xy;
+
+    #if DEBUG_VIEW == 5
+        // [视锥体检查] 
+        // 红色 = X/Y 超出光照视锥 (0~1)
+        // 蓝色 = Z 超出深度范围 (0~1)
+        // 绿色 = 安全区域 (应该有阴影)
+        bool outXY = localUV_Debug.x < 0 || localUV_Debug.x > 1 || localUV_Debug.y < 0 || localUV_Debug.y > 1;
+        bool outZ  = projCoords.z < 0 || projCoords.z > 1;
+        
+        if (outXY) return float4(1, 0, 0, 1); // Red: Crop Warning
+        if (outZ)  return float4(0, 0, 1, 1); // Blue: Depth Clip Warning
+        return float4(0, 1, 0, 1);            // Green: Safe
+
+    #elif DEBUG_VIEW == 6
+        // [Atlas 对齐检查 - UV Grid]
+        // 在物体表面投射 Atlas 的 UV 网格。
+        // 如果你能看清物体表面的网格，说明 atlas_params 传递正确。
+        // 如果网格极度拉伸或全黑，说明 params 传错了。
+        float2 grid = frac(atlasUV_Debug * 100.0); // 100x grid
+        return float4(grid, 0, 1);
+
+    #elif DEBUG_VIEW == 7
+        // [ShadowMap 采样直读]
+        // 直接读取 ShadowMap 里的原始数据。
+        // 预期：你应该能看到类似“黑白照片”的场景深度图贴在物体表面。
+        // 如果全是白色：说明 ShadowMap 没写进去，或者深度测试挂了。
+        // 如果全是黑色：说明 Clear Color 不对，或者采样到了空区域。
+        float rawDepth = g_shadowMap.SampleLevel(g_shadowSampler, atlasUV_Debug, 0).r;
+        // 为了让肉眼能看清深度变化，做个非线性增强
+        return float4(rawDepth.xxx, 1.0);
+
+    #elif DEBUG_VIEW == 8
+        // [核心：精度与 Bias 显微镜]
+        // 红色 = 认为在阴影中 (SurfaceDepth > MapDepth)
+        // 绿色 = 认为被照亮 (SurfaceDepth < MapDepth)
+        // 黑色 = 及其接近 (在 Bias 范围内)
+        
+        float mapDepth = g_shadowMap.SampleLevel(g_shadowSampler, atlasUV_Debug, 0).r;
+        float surfDepth = projCoords.z;
+        
+        float diff = surfDepth - mapDepth;
+        
+        // 放大差异 100 倍以便肉眼观察
+        // 如果表面有大量红绿交替的噪点（Shadow Acne），说明 Bias 太小
+        // 如果脚下该有阴影的地方是绿色的（Peter Panning），说明 Bias 太大
+        if (diff > 0.0005) return float4(1, 0, 0, 1); // Red: Shadow
+        if (diff < -0.0005) return float4(0, 1, 0, 1); // Green: Lit
+        return float4(0, 0, 0, 1); // Black: Within Epsilon
+
+    #elif DEBUG_VIEW == 9
+        // [泊松采样范围可视化]
+        // 可视化采样的范围有多大，帮助你判断 diskRadius 是否合适
+        float width, height;
+        g_shadowMap.GetDimensions(width, height);
+        float2 texelSize = 1.0 / float2(width, height);
+        float diskRadius = 3.0;
+        
+        // 显示最远的一个采样点偏离中心多远
+        float2 offset = poissonDisk[0] * texelSize * diskRadius;
+        // 用颜色表示偏移量的强度
+        return float4(length(offset) * 1000.0, 0, 0, 1); 
     #endif
 
     // Tone Mapping & Gamma

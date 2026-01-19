@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <limits>
 #include <vector>
+#include <unordered_map>
 
 namespace mujoco {
 namespace mjbatch {
@@ -26,6 +27,29 @@ namespace mjbatch {
 // ============================================================================
 
 namespace {
+
+
+// 顶点唯一键：由 (position index, normal index, uv index) 组成
+struct VertexKey {
+    int p;
+    int n;
+    int uv;
+
+    bool operator==(const VertexKey& other) const {
+        return p == other.p && n == other.n && uv == other.uv;
+    }
+};
+
+struct VertexKeyHash {
+    size_t operator()(const VertexKey& k) const {
+        size_t h1 = std::hash<int>{}(k.p);
+        size_t h2 = std::hash<int>{}(k.n);
+        size_t h3 = std::hash<int>{}(k.uv);
+        // 一个简单稳定的组合
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
+    }
+};
+
 
 // Helper to calculate AABB from a set of vertices (used for Mesh/HField)
 AABB ComputeAABB(const std::vector<Vertex>& vertices) {
@@ -681,55 +705,74 @@ GeometryAABB GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
     int faceadr = model->mesh_faceadr[mesh_id];
     int facenum = model->mesh_facenum[mesh_id];
     
-    int normaladr = model->mesh_normaladr[mesh_id];
+    int normaladr   = model->mesh_normaladr[mesh_id];
     int texcoordadr = model->mesh_texcoordadr[mesh_id];
     bool has_texcoord = (texcoordadr >= 0);
 
-    // 预分配内存 (Unrolled: 3 vertices per face)
+    // 预分配内存（最大可能数量）
     result.vertices.reserve(facenum * 3);
     result.indices.reserve(facenum * 3);
 
-    // 2. 遍历每一个面 (而不是遍历顶点)
+    // +++ 新增：顶点缓存表（用于去重共享）
+    std::unordered_map<VertexKey, uint32_t, VertexKeyHash> vertex_map;
+    vertex_map.reserve(facenum * 3);
+
+    // 2. 遍历每一个面
     for (int i = 0; i < facenum; ++i) {
-        // 当前面的全局偏移
         int global_face_idx = faceadr + i;
         
-        // 获取当前面的 3 个顶点位置索引 (Pos Index) 
         int p_idx[3];
         int n_idx[3];
         int uv_idx[3];
 
-        // 读取位置索引
+        // 位置索引
         p_idx[0] = model->mesh_face[3 * global_face_idx + 0];
         p_idx[1] = model->mesh_face[3 * global_face_idx + 1];
         p_idx[2] = model->mesh_face[3 * global_face_idx + 2];
 
-        // 读取法线索引
+        // 法线索引
         if (normaladr >= 0 && model->mesh_facenormal) {
             n_idx[0] = model->mesh_facenormal[3 * global_face_idx + 0];
             n_idx[1] = model->mesh_facenormal[3 * global_face_idx + 1];
             n_idx[2] = model->mesh_facenormal[3 * global_face_idx + 2];
         } else {
-            // Fallback: 如果没有法线索引，通常假设法线索引 = 位置索引 (平滑着色)
-            n_idx[0] = p_idx[0]; n_idx[1] = p_idx[1]; n_idx[2] = p_idx[2];
+            // fallback：平滑假设
+            n_idx[0] = p_idx[0];
+            n_idx[1] = p_idx[1];
+            n_idx[2] = p_idx[2];
         }
 
-        // 读取 UV 索引 (如果有)
+        // UV 索引
         if (has_texcoord && model->mesh_facetexcoord) {
             uv_idx[0] = model->mesh_facetexcoord[3 * global_face_idx + 0];
             uv_idx[1] = model->mesh_facetexcoord[3 * global_face_idx + 1];
             uv_idx[2] = model->mesh_facetexcoord[3 * global_face_idx + 2];
         } else {
-            uv_idx[0] = -1; uv_idx[1] = -1; uv_idx[2] = -1;
+            uv_idx[0] = -1;
+            uv_idx[1] = -1;
+            uv_idx[2] = -1;
         }
 
-        // 3. 构建三角形的 3 个顶点
+        // 3. 构建三角形三个顶点
         for (int v = 0; v < 3; ++v) {
+
+            // +++ 构造唯一键
+            VertexKey key;
+            key.p  = p_idx[v];
+            key.n  = n_idx[v];
+            key.uv = uv_idx[v];
+
+            auto it = vertex_map.find(key);
+            if (it != vertex_map.end()) {
+                // 已存在，直接复用 index
+                result.indices.push_back(it->second);
+                continue;
+            }
+
+            // --- 构造新顶点 ---
             Vertex vertex;
 
             // A. Position
-            // 注意：mesh_vert 是 float 数组，stride 为 3
-            // 索引是：基地址 + 3 * 局部索引
             const float* p_ptr = model->mesh_vert + 3 * (vertadr + p_idx[v]);
             vertex.position[0] = p_ptr[0];
             vertex.position[1] = p_ptr[1];
@@ -737,38 +780,37 @@ GeometryAABB GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
 
             // B. Normal
             if (normaladr >= 0) {
-                // 法线也是全局大数组，索引：基地址 + 3 * 法线索引
                 const float* n_ptr = model->mesh_normal + 3 * (normaladr + n_idx[v]);
                 vertex.normal[0] = n_ptr[0];
                 vertex.normal[1] = n_ptr[1];
                 vertex.normal[2] = n_ptr[2];
             } else {
-                vertex.normal[0] = 0; vertex.normal[1] = 0; vertex.normal[2] = 1;
+                vertex.normal[0] = 0.0f;
+                vertex.normal[1] = 0.0f;
+                vertex.normal[2] = 1.0f;
             }
 
             // C. UV
             if (has_texcoord && uv_idx[v] >= 0) {
-                // UV 是 float 数组，stride 为 2
                 const float* uv_ptr = model->mesh_texcoord + 2 * (texcoordadr + uv_idx[v]);
                 vertex.texcoord[0] = uv_ptr[0];
                 vertex.texcoord[1] = uv_ptr[1];
             } else {
-                vertex.texcoord[0] = 0; vertex.texcoord[1] = 0;
+                vertex.texcoord[0] = 0.0f;
+                vertex.texcoord[1] = 0.0f;
             }
-            
-            // D. Color (Default white)
-            // vertex.color = {1, 1, 1, 1}; 
 
-            // 添加到 Buffer
+            // D. 推入顶点并记录索引
+            uint32_t new_index = static_cast<uint32_t>(result.vertices.size());
             result.vertices.push_back(vertex);
-            
-            // 线性生成索引 (0, 1, 2, 3, 4, 5...)
-            result.indices.push_back(static_cast<uint32_t>(result.vertices.size() - 1));
+            vertex_map[key] = new_index;
+            result.indices.push_back(new_index);
         }
     }
 
     return {result, ComputeAABB(result.vertices)};
 }
+
 
 GeometryAABB GeometryBuilder::BuildConvexHull(const mjModel* model, int mesh_id) {
     return BuildMesh(model, mesh_id);

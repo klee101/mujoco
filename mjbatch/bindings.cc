@@ -61,6 +61,9 @@ PYBIND11_MODULE(mjb, m) {
             return BatchRenderer::Create(models, config);
         }))
 
+        .def("start_capture", &BatchRenderer::StartCapture, "Manually start RenderDoc frame capture")
+        .def("end_capture", &BatchRenderer::EndCapture, "Manually end and save RenderDoc frame capture")
+
         // ... [Rest remains same] ...
         .def("render_from_shm", [](BatchRenderer& self, uintptr_t address, int batch_idx, int max_geom, int max_light) {
             return self.RenderFromMemory(reinterpret_cast<uint8_t*>(address), batch_idx, max_geom, max_light).IsSuccess();

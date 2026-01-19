@@ -140,7 +140,6 @@ add_library(renderer STATIC
   scene.cc
   builtin.cc
   vkutils.cc
-  pipeline_shaders.cc
   stb_impl.cc
 
   include/renderer.h
@@ -155,7 +154,6 @@ add_library(renderer STATIC
   include/vkutils.h
   include/vkutils.inl
   include/memcpy_avx.h
-  include/pipeline_shaders.h
   include/stb_image.h
 )
 

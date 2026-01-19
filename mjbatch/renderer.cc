@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include "shared_protocol.h"
+#include <dlfcn.h>
 
 using namespace mujoco::mjbatch;
 
@@ -64,6 +65,28 @@ std::string glm_vec3_to_string(const glm::vec3& v) {
     oss << std::fixed << std::setprecision(4) 
         << "(" << v.x << ", " << v.y << ", " << v.z << ")";
     return oss.str();
+}
+
+void BatchRenderer::InitRenderDoc() {
+    // 1. 先尝试检查是否已经注入 (NOLOAD)
+    void *mod = dlopen("librenderdoc.so", RTLD_NOW | RTLD_NOLOAD);
+    
+    // 2. 如果没有注入，尝试硬加载 (去掉 NOLOAD)
+    if (!mod) {
+        mod = dlopen("librenderdoc.so", RTLD_NOW);
+    }
+
+    if (mod) {
+        pRENDERDOC_GetAPI R_GetAPI = (pRENDERDOC_GetAPI)dlsym(mod, "RENDERDOC_GetAPI");
+        if (R_GetAPI && R_GetAPI(eRENDERDOC_API_Version_1_4_1, (void **)&rdoc_api_) == 1) {
+            // 成功加载
+            rdoc_api_->SetCaptureFilePathTemplate("./mjb_capture");
+            printf("[BatchRenderer] RenderDoc API connected.\n");
+        }
+    } else {
+        // 打印具体错误原因，这非常重要！
+        printf("[BatchRenderer] RenderDoc NOT detected. dlerror: %s\n", dlerror());
+    }
 }
 
 // Gribb-Hartmann Plane Extraction
@@ -164,38 +187,41 @@ int ResolveTextureFromMaterial(const mjModel* m, int matid) {
     return -1;
 }
 
-glm::mat4 ComputeLightViewProj(const glm::vec3& lightPos, const glm::vec3& lightDir) {
-    glm::vec3 eye = lightPos; 
 
-    // 2. 确定 View Matrix
-    float dist = 1.0f; 
-    glm::vec3 center = eye + glm::normalize(lightDir) * dist;
-
-    glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
-    if (std::abs(glm::dot(glm::normalize(lightDir), up)) > 0.99f) {
-        up = glm::vec3(0.0f, 1.0f, 0.0f); 
+void PrintMatrix(const char* name, const glm::mat4& m) {
+    printf("--- %s ---\n", name);
+    for (int i = 0; i < 4; i++) {
+        printf("  [ %.4f, %.4f, %.4f, %.4f ]\n", 
+               m[0][i], m[1][i], m[2][i], m[3][i]);
     }
+}
 
-    glm::mat4 view = glm::lookAt(eye, center, up);
+glm::mat4 ComputeLightViewProj(
+    const glm::vec3& lightPos,
+    const glm::vec3& lightDir)
+{
 
-    // 3. Projection Matsrix
-    float s = 4.0f;
+    glm::vec3 lightDirNorm = glm::normalize(lightDir);
 
-    float frustum_near = 0.01f;
-    float frustum_far = 10.0f;
-    
-    glm::mat4 proj = glm::ortho(-s, s, -s, s, frustum_near, frustum_far);
+    // up向量
+    glm::vec3 up = glm::abs(lightDirNorm.y) < 0.99f ? glm::vec3(0,1,0) : glm::vec3(1,0,0);
 
-    // 4. Vulkan Clip Space Correction
-    const glm::mat4 clipCorrection = glm::mat4(
-        1.0f,  0.0f, 0.0f, 0.0f,
-        0.0f, -1.0f, 0.0f, 0.0f,
-        0.0f,  0.0f, 0.5f, 0.0f,
-        0.0f,  0.0f, 0.5f, 1.0f
+    // 光空间视图矩阵
+    glm::vec3 target = lightPos + lightDirNorm;
+    glm::mat4 lightView = glm::lookAt(lightPos, target, up);
+
+    // 正交投影矩阵：覆盖 [-4,4] x [-4,4]，深度0.1~10
+    float orthoWidth = 4.0f;
+    float orthoHeight = 4.0f;
+    float nearPlane = 0.1f;
+    float farPlane = 10.0f;
+    glm::mat4 lightProj = glm::orthoRH_ZO(
+        -orthoWidth / 2.0f, orthoWidth / 2.0f,
+        -orthoHeight / 2.0f, orthoHeight / 2.0f,
+        nearPlane, farPlane
     );
-    
-    
-    return clipCorrection * proj * view;
+
+    return lightProj * lightView;
 }
 
 glm::mat4 ComputeModelMatrix(const ShmGeom& geom) {
@@ -955,7 +981,7 @@ void BatchRenderer::InitGlobalGeometry() {
 
     // 3. process Built-in Primitives 
     // here set all builtin geom the same size params 
-    ProcessGeometry("__builtin_box",      [](){ return GeometryBuilder::BuildBox(24); });
+    ProcessGeometry("__builtin_box",      [](){ return GeometryBuilder::BuildBox(12); });
     ProcessGeometry("__builtin_sphere",   [](){ return GeometryBuilder::BuildSphere(16, 16); }); // 16 stacks/slices
     ProcessGeometry("__builtin_capsule",  [](){ return GeometryBuilder::BuildCapsule(16, 16); });
     ProcessGeometry("__builtin_cylinder", [](){ return GeometryBuilder::BuildCylinder(32, 64); });
@@ -1179,6 +1205,9 @@ bool BatchRenderer::Initialize() {
         LOG(config_, "Initialize(): models_ is null");
         return false;
     }
+
+    // InitRenderDoc();
+    // LOG(config_, "Initialize(): RenderDoc initialized");
 
     // Create Backend -> Device -> RenderContext
     if (!CreateVulkanInstance()) {
@@ -1667,7 +1696,9 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             
             dst.castShadow  = (uint32_t)src.castshadow;
             dst.type = src.type;
-            dst.view_proj = ComputeLightViewProj(dst.position, dst.direction); 
+
+
+            dst.view_proj = ComputeLightViewProj(dst.position,dst.direction); 
 
         }
 
@@ -1683,8 +1714,12 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             glm::mat4 view = RowMajorToGLM(src_cam.view);
             glm::mat4 proj = RowMajorToGLM(src_cam.proj);
 
+            PrintMatrix("Camera View", view);
+            PrintMatrix("Camera Proj", proj);
+
             glm::mat4 view_proj = proj * view;
             glm::vec3 cam_pos = glm::vec3(src_cam.pos[0], src_cam.pos[1], src_cam.pos[2]);
+            PrintMatrix("Camera ViewProj", view_proj);
 
             // --- SAVE INFO FOR CULLING ---
             camera_cull_info_[resource_idx].view_proj = view_proj;
@@ -2920,9 +2955,10 @@ bool BatchRenderer::CreateShadowPipeline() {
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_NONE; // Often better to draw backfaces or none for shadows
-    rasterizer.depthBiasEnable = VK_FALSE;      // [IMPORTANT] Shadow bias
-    rasterizer.depthBiasConstantFactor = 1.25f;
-    rasterizer.depthBiasSlopeFactor = 1.75f;
+    rasterizer.depthBiasEnable = VK_TRUE;      // [IMPORTANT] Shadow bias
+    rasterizer.depthBiasConstantFactor = 0.002f;
+    rasterizer.depthBiasSlopeFactor = 1.5f;
+
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;

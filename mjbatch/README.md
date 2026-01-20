@@ -38,18 +38,6 @@ git submodule update --init --recursive
     tar zxvf linux_dxc_2025_07_14.x86_64.tar.gz 
     ```
 
-  * **Madrona Toolchain 手动下载 (解决网络问题):**
-    如果 CMake 自动下载失败，请手动下载压缩包，并放置到指定的构建源路径。
-
-    1.  **目标路径：**
-        ```
-        mujoco/external/madrona/external/madrona-toolchain/cmake-tmp/madronabundledtoolchain-subbuild/madronabundledtoolchain-populate-prefix/src/
-        ```
-    2.  **下载命令：**
-        ```bash
-        wget https://github.com/shacklettbp/madrona-toolchain/releases/download/8c0b55b/madrona-toolchain-8c0b55b-linux-x86_64.tar.xz
-        ```
-
 #### 4\. GLFW/图形后端配置
 
 根据您的设备环境（服务器只有 X11），需要在 CMake 配置中**显式禁用 Wayland** 支持，只使用 X11 后端。
@@ -77,9 +65,15 @@ cmake -S .. \
     -DGLFW_BUILD_WAYLAND=OFF \
     -DGLFW_BUILD_X11=OFF \
     -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops" \
-    -DPython3_EXECUTABLE=$(which python)
+    -DPython3_EXECUTABLE=$(which python) \
 
+// if need debug
 cmake ..     -DPython3_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug
+
+// if use gcc11, add
+    -DCMAKE_C_COMPILER=gcc-11 
+    -DCMAKE_CXX_COMPILER=g++-11
+
 ```
 
 > **提示:** `-march=native` 会针对当前机器的 CPU 架构进行最大优化。
@@ -92,24 +86,9 @@ Vulkan 程序的运行依赖于 **Shader SPV 文件**。这里通过 `CompileSha
 
 ```bash
 cd /path/to/mujoco
-# 编译 C++ Benchmark 主程序
-cmake --build build --config Release --target benchmark_test --parallel
+# 编译 C++ mujoco lib
+cmake --build build --config Release --target mjb --parallel
 
 # 编译 Shaders（生成 .spv 文件）
 cmake --build build --config Release --target CompileShaders --parallel
 ```
-
-### III. 执行 Benchmark
-
-在 `mujoco/build` 路径下执行编译好的程序：
-
-```bash
-cd build
-./bin/benchmark_test
-```
-
-### IV. 已知路径问题
-
-本项目中 `tests/benckmark_test.cc` 使用的 **mjcf model** 是通过 Robosuite 生成的 XML 文件，其中包含**绝对路径**来索引 `.stl` 和纹理图片等资源。
-
-**解决方案：** 正常运行 Benchmark 暂时需要手动提取 Robosuite 的运行时 XML 文件，并确保所有资源路径都是正确的相对路径或可访问的绝对路径。

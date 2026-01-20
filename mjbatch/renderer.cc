@@ -2903,12 +2903,13 @@ bool BatchRenderer::CreateShadowResources() {
 // [NEW] Function to create Shadow Pipeline (Vertex Only)
 bool BatchRenderer::CreateShadowPipeline() {
     Device &dev = *device_;
-    std::string shader_dir = "/home/hpf/project/vulkan/mujoco/mujoco/build/shaders_spv/";
+        std::filesystem::path shaderPath =
+    getLibraryDir() / ".." / "shaders_spv" / "shadow_vs.spv"
     
     // Reuse existing VS or create a specialized one "shadow_vs.spv"
     // Shadow VS only needs: gl_Position = light_proj * light_view * model * pos;
     // For now, assuming you compile a new shader 'shadow_vs.spv'
-    VkShaderModule shadow_vs = loadShaderModule(shader_dir + "shadow_vs.spv");
+    VkShaderModule shadow_vs = loadShaderModule(shaderPath);
 
     VkPipelineShaderStageCreateInfo vertStage{};
     vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

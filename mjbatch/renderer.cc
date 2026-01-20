@@ -2904,7 +2904,7 @@ bool BatchRenderer::CreateShadowResources() {
 bool BatchRenderer::CreateShadowPipeline() {
     Device &dev = *device_;
         std::filesystem::path shaderPath =
-    getLibraryDir() / ".." / "shaders_spv" / "shadow_vs.spv"
+    getLibraryDir() / ".." / "shaders_spv" / "shadow_vs.spv";
     
     // Reuse existing VS or create a specialized one "shadow_vs.spv"
     // Shadow VS only needs: gl_Position = light_proj * light_view * model * pos;

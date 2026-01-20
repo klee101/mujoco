@@ -6,6 +6,7 @@
 
 下载 Vulkan SDK **1.4.328.1** 版本。
 wget https://sdk.lunarg.com/sdk/download/1.4.328.1/linux/vulkansdk-linux-x86_64-1.4.328.1.tar.xz
+tar -xJf vulkansdk-linux-x86_64-1.4.328.1.tar.xz
 
 **配置 `$HOME/.bashrc`：**
 将以下环境变量添加到您的 shell 配置文件（例如 `~/.bashrc`），然后运行 `source ~/.bashrc` 使其生效。

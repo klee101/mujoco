@@ -25,7 +25,8 @@
 #include "stb_image.h"
 #include "renderdoc_app.h"
 
-#include <nvtx3/nvToolsExt.h> 
+#ifdef HAS_NVTX
+#include <nvtx3/nvToolsExt.h>
 
 struct ScopedNvtxRange {
     ScopedNvtxRange(const char* name, uint32_t color_argb = 0xFFFFFFFF) {
@@ -42,6 +43,17 @@ struct ScopedNvtxRange {
         nvtxRangePop();
     }
 };
+
+#else
+
+// NVTX 不可用时，空实现
+struct ScopedNvtxRange {
+    ScopedNvtxRange(const char* /*name*/, uint32_t /*color_argb*/ = 0) {}
+    ~ScopedNvtxRange() {}
+};
+
+#endif
+
 #define kMaxBindlessTextures 32
 
 const uint32_t COLOR_PHYSICS = 0xFF00FF00; // 绿色
@@ -62,7 +74,7 @@ public:
         for(size_t i = 0; i < threads; ++i)
             workers.emplace_back([this, i] { 
                 std::string thread_name = "Worker-Thread-" + std::to_string(i);
-                nvtxNameOsThreadA(pthread_self(), thread_name.c_str());
+                //nvtxNameOsThreadA(pthread_self(), thread_name.c_str());
 
                 for(;;) {
                     std::function<void()> task;

@@ -75,7 +75,7 @@ target_include_directories(shader_compiler PRIVATE ${DXC_INCLUDE})
 
 target_link_libraries(shader_compiler PRIVATE
     ${DXC_LIB}/libdxcompiler.so
-    spv_reflect
+    spirv-reflect-static
 )
 
 target_compile_features(shader_compiler PUBLIC cxx_std_20)

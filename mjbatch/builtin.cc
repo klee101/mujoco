@@ -811,6 +811,143 @@ GeometryAABB GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
     return {result, ComputeAABB(result.vertices)};
 }
 
+GeometryAABB GeometryBuilder::BuildMeshSmooth(const mjModel* model, int mesh_id, float normalAngleDeg = 30.0f) {
+    GeometryBuffer result;
+
+    if (mesh_id < 0 || mesh_id >= model->nmesh) {
+        return {result, AABB{{0,0,0}, {0,0,0}}};
+    }
+
+    int vertadr = model->mesh_vertadr[mesh_id];
+    int faceadr = model->mesh_faceadr[mesh_id];
+    int facenum = model->mesh_facenum[mesh_id];
+
+    int normaladr   = model->mesh_normaladr[mesh_id];
+    int texcoordadr = model->mesh_texcoordadr[mesh_id];
+    bool has_texcoord = (texcoordadr >= 0);
+
+    result.vertices.reserve(facenum * 3);
+    result.indices.reserve(facenum * 3);
+
+    // 顶点去重 map，只按位置 + UV
+    struct VertexKeyPos {
+        int p;
+        int uv;
+        bool operator==(const VertexKeyPos& other) const {
+            return p == other.p && uv == other.uv;
+        }
+    };
+    struct VertexKeyPosHash {
+        size_t operator()(const VertexKeyPos& k) const {
+            return std::hash<int>()(k.p) ^ (std::hash<int>()(k.uv) << 1);
+        }
+    };
+    std::unordered_map<VertexKeyPos, uint32_t, VertexKeyPosHash> vertex_map;
+    std::vector<glm::vec3> normal_accum; // 累加法线
+    std::vector<int> normal_count;
+
+    float normalThreshold = std::cos(glm::radians(normalAngleDeg));
+
+    for (int i = 0; i < facenum; ++i) {
+        int global_face_idx = faceadr + i;
+
+        int p_idx[3];
+        int n_idx[3];
+        int uv_idx[3];
+
+        p_idx[0] = model->mesh_face[3 * global_face_idx + 0];
+        p_idx[1] = model->mesh_face[3 * global_face_idx + 1];
+        p_idx[2] = model->mesh_face[3 * global_face_idx + 2];
+
+        if (normaladr >= 0 && model->mesh_facenormal) {
+            n_idx[0] = model->mesh_facenormal[3 * global_face_idx + 0];
+            n_idx[1] = model->mesh_facenormal[3 * global_face_idx + 1];
+            n_idx[2] = model->mesh_facenormal[3 * global_face_idx + 2];
+        } else {
+            n_idx[0] = p_idx[0];
+            n_idx[1] = p_idx[1];
+            n_idx[2] = p_idx[2];
+        }
+
+        if (has_texcoord && model->mesh_facetexcoord) {
+            uv_idx[0] = model->mesh_facetexcoord[3 * global_face_idx + 0];
+            uv_idx[1] = model->mesh_facetexcoord[3 * global_face_idx + 1];
+            uv_idx[2] = model->mesh_facetexcoord[3 * global_face_idx + 2];
+        } else {
+            uv_idx[0] = -1;
+            uv_idx[1] = -1;
+            uv_idx[2] = -1;
+        }
+
+        for (int v = 0; v < 3; ++v) {
+            Vertex vertex;
+
+            // Position
+            const float* p_ptr = model->mesh_vert + 3 * (vertadr + p_idx[v]);
+            vertex.position[0] = p_ptr[0];
+            vertex.position[1] = p_ptr[1];
+            vertex.position[2] = p_ptr[2];
+
+            // Normal
+            if (normaladr >= 0) {
+                const float* n_ptr = model->mesh_normal + 3 * (normaladr + n_idx[v]);
+                vertex.normal[0] = n_ptr[0];
+                vertex.normal[1] = n_ptr[1];
+                vertex.normal[2] = n_ptr[2];
+            } else {
+                vertex.normal[0] = 0.0f;
+                vertex.normal[1] = 0.0f;
+                vertex.normal[2] = 1.0f;
+            }
+
+            // UV
+            if (has_texcoord && uv_idx[v] >= 0) {
+                const float* uv_ptr = model->mesh_texcoord + 2 * (texcoordadr + uv_idx[v]);
+                vertex.texcoord[0] = uv_ptr[0];
+                vertex.texcoord[1] = uv_ptr[1];
+            } else {
+                vertex.texcoord[0] = 0.0f;
+                vertex.texcoord[1] = 0.0f;
+            }
+
+            // --- 平滑法线合并 ---
+            VertexKeyPos key{p_idx[v], uv_idx[v]};
+            auto it = vertex_map.find(key);
+            if (it != vertex_map.end()) {
+                uint32_t idx = it->second;
+                glm::vec3 avgNormal = normal_accum[idx] / float(normal_count[idx]);
+                float cosAngle = glm::dot(glm::normalize(avgNormal), glm::vec3(vertex.normal[0], vertex.normal[1], vertex.normal[2]));
+                if (cosAngle >= normalThreshold) {
+                    // 合并：累加法线
+                    normal_accum[idx] += glm::vec3(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+                    normal_count[idx] += 1;
+                    result.indices.push_back(idx);
+                    continue;
+                }
+            }
+
+            // 新顶点
+            uint32_t new_index = static_cast<uint32_t>(result.vertices.size());
+            result.vertices.push_back(vertex);
+            vertex_map[key] = new_index;
+            normal_accum.push_back(glm::vec3(vertex.normal[0], vertex.normal[1], vertex.normal[2]));
+            normal_count.push_back(1);
+            result.indices.push_back(new_index);
+        }
+    }
+
+    // --- 法线归一化 ---
+    for (size_t i = 0; i < result.vertices.size(); ++i) {
+        glm::vec3 n = normal_accum[i] / float(normal_count[i]);
+        n = glm::normalize(n);
+        result.vertices[i].normal[0] = n.x;
+        result.vertices[i].normal[1] = n.y;
+        result.vertices[i].normal[2] = n.z;
+    }
+
+    return {result, ComputeAABB(result.vertices)};
+}
+
 
 GeometryAABB GeometryBuilder::BuildConvexHull(const mjModel* model, int mesh_id) {
     return BuildMesh(model, mesh_id);

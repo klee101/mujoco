@@ -1206,7 +1206,7 @@ bool BatchRenderer::Initialize() {
         return false;
     }
 
-    // InitRenderDoc();
+    InitRenderDoc();
     // LOG(config_, "Initialize(): RenderDoc initialized");
 
     // Create Backend -> Device -> RenderContext
@@ -1714,12 +1714,12 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
             glm::mat4 view = RowMajorToGLM(src_cam.view);
             glm::mat4 proj = RowMajorToGLM(src_cam.proj);
 
-            PrintMatrix("Camera View", view);
-            PrintMatrix("Camera Proj", proj);
+            // PrintMatrix("Camera View", view);
+            // PrintMatrix("Camera Proj", proj);
 
             glm::mat4 view_proj = proj * view;
             glm::vec3 cam_pos = glm::vec3(src_cam.pos[0], src_cam.pos[1], src_cam.pos[2]);
-            PrintMatrix("Camera ViewProj", view_proj);
+            // PrintMatrix("Camera ViewProj", view_proj);
 
             // --- SAVE INFO FOR CULLING ---
             camera_cull_info_[resource_idx].view_proj = view_proj;

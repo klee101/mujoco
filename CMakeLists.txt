@@ -308,8 +308,13 @@ if(NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
   )
 endif()
 
-add_subdirectory(external/madrona EXCLUDE_FROM_ALL)
-
 add_subdirectory(external/glm EXCLUDE_FROM_ALL)
+
+set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
+set(SPIRV_REFLECT_STATIC_LIB ON  CACHE BOOL "" FORCE)
+set(SPIRV_REFLECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SPIRV_REFLECT_INSTALL OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(external/spirv-reflect EXCLUDE_FROM_ALL)
 
 add_subdirectory(mjbatch)

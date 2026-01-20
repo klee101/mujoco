@@ -273,7 +273,7 @@ float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir
     if (currentDepth > 1.0 || localUV.x < 0.0 || localUV.x > 1.0 || localUV.y < 0.0 || localUV.y > 1.0)
         return 0.0;
 
-    float bias = 0.00005;
+    float bias = 0.0005;
     float shadow = 0.0;
     
     // Get full atlas dimensions
@@ -291,7 +291,7 @@ float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir
     float2 uvMax = pushConst.shadow_atlas_params.xy + pushConst.shadow_atlas_params.z;
 
     // Poisson Loop
-    float diskRadius = 3.0; 
+    float diskRadius = 1.0; 
     
     for(int i = 0; i < 16; ++i) {
         float2 sampleUV = atlasUV + poissonDisk[i] * texelSize * diskRadius;
@@ -302,7 +302,7 @@ float ShadowCalculation(float4 fragPosLightSpace, float3 normal, float3 lightDir
         sampleUV.y = clamp(sampleUV.y, uvMin.y + texelSize.y, uvMax.y - texelSize.y);
 
         float pcfDepth = g_shadowMap.Sample(g_shadowSampler, sampleUV).r; 
-        shadow += (currentDepth - bias > pcfDepth ? 1.0 : 0.0);
+        shadow += (currentDepth > pcfDepth ? 1.0 : 0.0);
     }
     
     return shadow / 16.0;

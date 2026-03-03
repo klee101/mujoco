@@ -811,6 +811,153 @@ GeometryAABB GeometryBuilder::BuildMesh(const mjModel* model, int mesh_id) {
     return {result, ComputeAABB(result.vertices)};
 }
 
+GeometryAABB GeometryBuilder::BuildMesh_MujocoStyle(const mjModel* model, int mesh_id)
+{
+    GeometryBuffer result;
+
+    if (mesh_id < 0 || mesh_id >= model->nmesh) {
+        return { result, AABB{{0,0,0}, {0,0,0}} };
+    }
+
+    int vertadr     = model->mesh_vertadr[mesh_id];
+    int faceadr     = model->mesh_faceadr[mesh_id];
+    int facenum     = model->mesh_facenum[mesh_id];
+    int normaladr   = model->mesh_normaladr[mesh_id];
+    int texcoordadr = model->mesh_texcoordadr[mesh_id];
+
+    bool has_texcoord = (texcoordadr >= 0 && model->mesh_facetexcoord);
+    bool has_normal   = (normaladr >= 0 && model->mesh_facenormal);
+
+    result.vertices.reserve(facenum * 3);
+    result.indices.reserve(facenum * 3);
+
+    for (int i = 0; i < facenum; ++i)
+    {
+        int global_face_idx = faceadr + i;
+
+        // --- 1. 读取三角形顶点 index ---
+        int p_idx[3];
+        p_idx[0] = model->mesh_face[3 * global_face_idx + 0];
+        p_idx[1] = model->mesh_face[3 * global_face_idx + 1];
+        p_idx[2] = model->mesh_face[3 * global_face_idx + 2];
+
+        // --- 2. 读取顶点位置 ---
+        float vpos[3][3];
+        for (int k = 0; k < 3; ++k) {
+            const float* p_ptr = model->mesh_vert + 3 * (vertadr + p_idx[k]);
+            vpos[k][0] = p_ptr[0];
+            vpos[k][1] = p_ptr[1];
+            vpos[k][2] = p_ptr[2];
+        }
+
+        // --- 3. 计算 face normal（完全复刻 mjr_makeNormal） ---
+        float edge1[3] = {
+            vpos[1][0] - vpos[0][0],
+            vpos[1][1] - vpos[0][1],
+            vpos[1][2] - vpos[0][2]
+        };
+
+        float edge2[3] = {
+            vpos[2][0] - vpos[0][0],
+            vpos[2][1] - vpos[0][1],
+            vpos[2][2] - vpos[0][2]
+        };
+
+        float faceNormal[3];
+        faceNormal[0] = edge1[1]*edge2[2] - edge1[2]*edge2[1];
+        faceNormal[1] = edge1[2]*edge2[0] - edge1[0]*edge2[2];
+        faceNormal[2] = edge1[0]*edge2[1] - edge1[1]*edge2[0];
+
+        float len = sqrtf(
+            faceNormal[0]*faceNormal[0] +
+            faceNormal[1]*faceNormal[1] +
+            faceNormal[2]*faceNormal[2]);
+
+        if (len < 1E-10f) {
+            faceNormal[0] = 0;
+            faceNormal[1] = 0;
+            faceNormal[2] = 1;
+        } else {
+            float inv = 1.0f / len;
+            faceNormal[0] *= inv;
+            faceNormal[1] *= inv;
+            faceNormal[2] *= inv;
+        }
+
+        // --- 4. 每个顶点 ---
+        for (int v = 0; v < 3; ++v)
+        {
+            Vertex vertex;
+
+            // Position
+            vertex.position[0] = vpos[v][0];
+            vertex.position[1] = vpos[v][1];
+            vertex.position[2] = vpos[v][2];
+
+            // --- Normal 处理（完全复刻 mjr_uploadMesh 逻辑） ---
+            if (has_normal)
+            {
+                int n_idx = model->mesh_facenormal[3 * global_face_idx + v];
+                const float* n_ptr = model->mesh_normal + 3 * (normaladr + n_idx);
+
+                float dot =
+                    n_ptr[0]*faceNormal[0] +
+                    n_ptr[1]*faceNormal[1] +
+                    n_ptr[2]*faceNormal[2];
+
+                if (has_texcoord)
+                {
+                    // 和 MuJoCo 一样：
+                    // 有 texcoord 时直接用 vertex normal
+                    vertex.normal[0] = n_ptr[0];
+                    vertex.normal[1] = n_ptr[1];
+                    vertex.normal[2] = n_ptr[2];
+                }
+                else
+                {
+                    // 无 texcoord 才做 dot 0.8 判断
+                    if (dot < 0.8f) {
+                        vertex.normal[0] = faceNormal[0];
+                        vertex.normal[1] = faceNormal[1];
+                        vertex.normal[2] = faceNormal[2];
+                    } else {
+                        vertex.normal[0] = n_ptr[0];
+                        vertex.normal[1] = n_ptr[1];
+                        vertex.normal[2] = n_ptr[2];
+                    }
+                }
+            }
+            else
+            {
+                // 无法线数据 → 直接用 face normal
+                vertex.normal[0] = faceNormal[0];
+                vertex.normal[1] = faceNormal[1];
+                vertex.normal[2] = faceNormal[2];
+            }
+
+            // --- Texcoord ---
+            if (has_texcoord)
+            {
+                int uv_idx = model->mesh_facetexcoord[3 * global_face_idx + v];
+                const float* uv_ptr = model->mesh_texcoord + 2 * (texcoordadr + uv_idx);
+
+                vertex.texcoord[0] = uv_ptr[0];
+                vertex.texcoord[1] = uv_ptr[1];
+            }
+            else
+            {
+                vertex.texcoord[0] = 0.0f;
+                vertex.texcoord[1] = 0.0f;
+            }
+
+            result.indices.push_back(static_cast<uint32_t>(result.vertices.size()));
+            result.vertices.push_back(vertex);
+        }
+    }
+
+    return { result, ComputeAABB(result.vertices) };
+}
+
 GeometryAABB GeometryBuilder::BuildMeshSmooth(const mjModel* model, int mesh_id, float normalAngleDeg = 30.0f) {
     GeometryBuffer result;
 

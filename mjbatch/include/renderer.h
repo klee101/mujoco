@@ -24,6 +24,7 @@
 #include "scene.h"
 #include "stb_image.h"
 #include "renderdoc_app.h"
+#include "profiler.h"
 
 #ifdef HAS_NVTX
 #include <nvtx3/nvToolsExt.h>
@@ -292,20 +293,13 @@ struct FrameObservation {
     size_t total_bytes;      
 };
 
-struct BRDFResources {
-    mujoco::mjbatch::LocalTexture texture; // Use your LocalTexture struct wrapper
-    VkImageView view = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkSampler sampler = VK_NULL_HANDLE;
-};
-
 struct EnvMapResources {
-    mujoco::mjbatch::LocalTexture env_2d_texture;
-    mujoco::mjbatch::LocalTexture cubemap_texture;
+    mujoco::mjbatch::LocalTexture env_2d_texture;      // 临时，上传 HDR 后可释放
+    mujoco::mjbatch::LocalTexture irradiance_texture;   // Irradiance Cubemap (32x32)
     VkImageView view_2d = VK_NULL_HANDLE;
-    VkImageView view_cube = VK_NULL_HANDLE;
+    VkImageView view_irradiance = VK_NULL_HANDLE;
     VkDeviceMemory memory_2d = VK_NULL_HANDLE;
-    VkDeviceMemory memory_cube = VK_NULL_HANDLE;
+    VkDeviceMemory memory_irradiance = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
 };
 
@@ -474,11 +468,6 @@ private:
     */
     void InitGlobalGeometry();
 
-    /*
-    * GenerateBRDFLUT - Used for PBR specular IBL
-    */
-   bool GenerateBRDFLUT();
-
 
 private:
     std::vector<mjModel*> models_;
@@ -563,12 +552,13 @@ private:
     // Output buffers
     std::vector<FrameObservation> frames;
 
-    BRDFResources brdf_lut_;
     EnvMapResources env_map_;
 
     RenderStats last_stats_;
     bool initialized_ = false;
     uint64_t frame_counter_ = 0;
+
+    RenderProfiler profiler_;
 
     ThreadPool pool;
 };

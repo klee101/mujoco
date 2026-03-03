@@ -88,6 +88,7 @@ public:
   
   // Build mesh from MuJoCo mesh data
   static GeometryAABB BuildMesh(const mjModel* model, int mesh_id);
+  static GeometryAABB BuildMesh_MujocoStyle(const mjModel* model, int mesh_id);
   static GeometryAABB BuildMeshSmooth(const mjModel* model, int mesh_id, float normalAngleDeg);
   static GeometryAABB BuildConvexHull(const mjModel* model, int mesh_id);
   // Build height field

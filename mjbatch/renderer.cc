@@ -2,6 +2,7 @@
 // Vulkan Batch Renderer Implementation
 
 #include "renderer.h"
+#include "profiler.h"
 #include "vkutils.h"
 #include "backend.h"
 #include "scene.h"
@@ -711,35 +712,35 @@ bool BatchRenderer::LoadEnvironmentMap() {
     REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, VK_NULL_HANDLE));
     dev.dt.deviceWaitIdle(dev.hdl); // Wait for upload
 
-    // C. Create Cubemap Image (Target)
-    // 1024x1024 per face, Mip levels = floor(log2(1024)) + 1 = 11
-    uint32_t cubeDim = 1024;
-    uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(cubeDim))) + 1;
+    // C. Create Irradiance Cubemap Image (Target)
+    // 32x32 per face, only 1 mip level (no mipmap needed for irradiance)
+    uint32_t cubeDim = 32;
+    uint32_t mipLevels = 1;
 
     // 参数 1: size (只需要一个，因为是正方形)
     // 参数 2: mip_levels
     // 参数 3: format
-    // 参数 4: usage (必须包含 STORAGE_BIT 用于 Compute Shader，SAMPLED_BIT 用于后续采样)
+    // 参数 4: usage (STORAGE_BIT for Compute Shader, SAMPLED_BIT for sampling)
     auto cube_res = allocator.makeTextureCube(
         cubeDim, 
         mipLevels, 
         VK_FORMAT_R32G32B32A32_SFLOAT, 
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
     );
-   env_map_.cubemap_texture = std::move(cube_res.first);
-    
+   env_map_.irradiance_texture = std::move(cube_res.first);
+     
     auto backingCube = allocator.alloc(cube_res.second.size);
     if (!backingCube) return false;
-    dev.dt.bindImageMemory(dev.hdl, env_map_.cubemap_texture.image, backingCube.value(), 0);
-    env_map_.memory_cube = backingCube.value();
+    dev.dt.bindImageMemory(dev.hdl, env_map_.irradiance_texture.image, backingCube.value(), 0);
+    env_map_.memory_irradiance = backingCube.value();
 
     // Create Cube View (For Shader Sampling)
     VkImageViewCreateInfo viewInfoCube{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    viewInfoCube.image = env_map_.cubemap_texture.image;
+    viewInfoCube.image = env_map_.irradiance_texture.image;
     viewInfoCube.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
     viewInfoCube.format = VK_FORMAT_R32G32B32A32_SFLOAT;
     viewInfoCube.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 6};
-    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfoCube, nullptr, &env_map_.view_cube));
+    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfoCube, nullptr, &env_map_.view_irradiance));
 
     // D. Run Compute Shader (Equirectangular -> Cubemap)
     // We assume the shader converts to the base mip level (0)
@@ -751,7 +752,7 @@ bool BatchRenderer::LoadEnvironmentMap() {
     REQ_VK(dev.dt.createImageView(dev.hdl, &storageViewInfo, nullptr, &cubeMip0View));
 
     // Load Shader
-    std::filesystem::path csPath = getLibraryDir() / ".." / "shaders_spv" / "envmap_cs.spv";
+    std::filesystem::path csPath = getLibraryDir() / ".." / "shaders_spv" / "irradiance_cs.spv";
     if (!std::filesystem::exists(csPath)) {
         LOG(config_, "Error: equirect_2_cube.spv not found. Skipping IBL generation.");
         return false;
@@ -797,101 +798,33 @@ bool BatchRenderer::LoadEnvironmentMap() {
     };
     dev.dt.updateDescriptorSets(dev.hdl, 2, writes, 0, nullptr);
 
-    // Dispatch
+    // Dispatch Irradiance Compute
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
     
-    // Transition Cube to General
-    VkImageMemoryBarrier barrierCube{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrierCube.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrierCube.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrierCube.srcAccessMask = 0;
-    barrierCube.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrierCube.image = env_map_.cubemap_texture.image;
-    barrierCube.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6}; // Mip 0, All 6 faces
-    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierCube);
+    // Transition to General for Compute write
+    VkImageMemoryBarrier barrierCompute{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrierCompute.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrierCompute.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrierCompute.srcAccessMask = 0;
+    barrierCompute.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrierCompute.image = env_map_.irradiance_texture.image;
+    barrierCompute.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierCompute);
 
     dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipelineLayout, 0, 1, &compSet, 0, nullptr);
-    // Dispatch: (1024/32, 1024/32, 6 faces) assuming 32x32 local size
-    dev.dt.cmdDispatch(cmd, cubeDim / 32, cubeDim / 32, 6);
+    // Dispatch: (32/8, 32/8, 6 faces) local size 8x8
+    dev.dt.cmdDispatch(cmd, cubeDim / 8, cubeDim / 8, 6);
 
-    // E. Generate Mipmaps (Using vkCmdBlitImage)
-    // Transition Mip 0 to SrcOptimal
-    VkImageMemoryBarrier barrierMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrierMips.image = env_map_.cubemap_texture.image;
-    barrierMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrierMips.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrierMips.subresourceRange.baseArrayLayer = 0;
-    barrierMips.subresourceRange.layerCount = 6;
-    barrierMips.subresourceRange.levelCount = 1;
-
-    int32_t mipWidth = cubeDim;
-    int32_t mipHeight = cubeDim;
-
-    for (uint32_t i = 1; i < mipLevels; i++) {
-        // 1. Transition previous mip (i-1) to TRANSFER_SRC_OPTIMAL
-        barrierMips.subresourceRange.baseMipLevel = i - 1;
-        barrierMips.oldLayout = (i == 1) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrierMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrierMips.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrierMips.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        
-        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierMips);
-
-        // 2. Transition current mip (i) to TRANSFER_DST_OPTIMAL
-        VkImageMemoryBarrier barrierDst = barrierMips;
-        barrierDst.subresourceRange.baseMipLevel = i;
-        barrierDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrierDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrierDst.srcAccessMask = 0;
-        barrierDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierDst);
-
-        // 3. Blit
-        VkImageBlit blit{};
-        blit.srcOffsets[0] = {0, 0, 0};
-        blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
-        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blit.srcSubresource.mipLevel = i - 1;
-        blit.srcSubresource.baseArrayLayer = 0;
-        blit.srcSubresource.layerCount = 6;
-
-        blit.dstOffsets[0] = {0, 0, 0};
-        blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
-        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        blit.dstSubresource.mipLevel = i;
-        blit.dstSubresource.baseArrayLayer = 0;
-        blit.dstSubresource.layerCount = 6;
-
-        dev.dt.cmdBlitImage(cmd, 
-            env_map_.cubemap_texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            env_map_.cubemap_texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &blit, VK_FILTER_LINEAR);
-
-        // 4. Transition previous mip (i-1) to SHADER_READ_ONLY
-        VkImageMemoryBarrier barrierRead = barrierMips;
-        barrierRead.subresourceRange.baseMipLevel = i - 1;
-        barrierRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrierRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrierRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrierRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierRead);
-
-        if (mipWidth > 1) mipWidth /= 2;
-        if (mipHeight > 1) mipHeight /= 2;
-    }
-
-    // Transition last mip to SHADER_READ_ONLY
-    VkImageMemoryBarrier barrierLast = barrierMips;
-    barrierLast.subresourceRange.baseMipLevel = mipLevels - 1;
-    barrierLast.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrierLast.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrierLast.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrierLast.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierLast);
+    // Transition to Shader Read Only (no mipmap needed for irradiance)
+    VkImageMemoryBarrier barrierRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrierRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrierRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrierRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrierRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrierRead.image = env_map_.irradiance_texture.image;
+    barrierRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrierRead);
 
     REQ_VK(dev.dt.endCommandBuffer(cmd));
     REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, render_context_->load_fence_));
@@ -974,7 +907,7 @@ void BatchRenderer::InitGlobalGeometry() {
 
             // 调用 GeometryBuilder::BuildMesh
             ProcessGeometry(name, [this, i, i_model]() {
-                return GeometryBuilder::BuildMesh(models_[i_model], i/2);
+                return GeometryBuilder::BuildMesh_MujocoStyle(models_[i_model], i/2);
             });
         }
     }
@@ -1078,126 +1011,6 @@ void BatchRenderer::InitGlobalGeometry() {
     
 }
 
-// [ADDED] New Helper Function Implementation
-bool BatchRenderer::GenerateBRDFLUT() {
-    LOG(config_, "GenerateBRDFLUT(): Starting...");
-    Device &dev = *device_;
-    MemoryAllocator &allocator = render_context_->allocator;
-
-    // 1. Create Image (512x512, R16G16_SFLOAT)
-    // We need STORAGE usage for Compute Shader, SAMPLED for PBR Shader
-    auto res = allocator.makeTextureIbl(512, 512, 1, VK_FORMAT_R16G16_SFLOAT);
-    brdf_lut_.texture = std::move(res.first);
-    TextureRequirements reqs = res.second;
-
-    auto backing = allocator.alloc(reqs.size);
-    if (!backing.has_value()) return false;
-    brdf_lut_.memory = backing.value();
-    
-    dev.dt.bindImageMemory(dev.hdl, brdf_lut_.texture.image, brdf_lut_.memory, 0);
-
-    // Create ImageView
-    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    viewInfo.image = brdf_lut_.texture.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R16G16_SFLOAT;
-    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &brdf_lut_.view));
-
-    // Create Sampler (Linear, Clamp to Edge)
-    brdf_lut_.sampler = makeImmutableSampler(dev, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-
-    // -------------------------------------------------------------------------
-    // COMPUTE PIPELINE SETUP
-    // -------------------------------------------------------------------------
-    
-    // 2. Load Compute Shader
-    std::filesystem::path shaderPath =
-    getLibraryDir() / ".." / "shaders_spv" / "brdf_lut_cs.spv";
-
-    VkShaderModule compShader = loadShaderModule(shaderPath.string());
-
-    // 3. Descriptor Set Layout for Compute (1 Storage Image)
-    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 1, &binding};
-    VkDescriptorSetLayout compDescLayout;
-    REQ_VK(dev.dt.createDescriptorSetLayout(dev.hdl, &layoutInfo, nullptr, &compDescLayout));
-
-    // 4. Pipeline Layout
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 1, &compDescLayout, 0, nullptr};
-    VkPipelineLayout compPipelineLayout;
-    REQ_VK(dev.dt.createPipelineLayout(dev.hdl, &pipelineLayoutInfo, nullptr, &compPipelineLayout));
-
-    // 5. Compute Pipeline
-    VkPipelineShaderStageCreateInfo shaderStage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, compShader, "main", nullptr};
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0, shaderStage, compPipelineLayout, VK_NULL_HANDLE, 0};
-    VkPipeline compPipeline;
-    REQ_VK(dev.dt.createComputePipelines(dev.hdl, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compPipeline));
-
-    // 6. Allocate & Update Descriptor Set
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 1, &poolSize};
-    VkDescriptorPool compPool;
-    REQ_VK(dev.dt.createDescriptorPool(dev.hdl, &poolInfo, nullptr, &compPool));
-
-    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, compPool, 1, &compDescLayout};
-    VkDescriptorSet compSet;
-    REQ_VK(dev.dt.allocateDescriptorSets(dev.hdl, &allocInfo, &compSet));
-
-    VkDescriptorImageInfo imageInfo{VK_NULL_HANDLE, brdf_lut_.view, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imageInfo, nullptr, nullptr};
-    dev.dt.updateDescriptorSets(dev.hdl, 1, &write, 0, nullptr);
-
-    // -------------------------------------------------------------------------
-    // EXECUTION
-    // -------------------------------------------------------------------------
-    VkCommandBuffer cmd = render_context_->load_cmd_;
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
-    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-
-    // Transition: Undefined -> General
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.image = brdf_lut_.texture.image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    // Dispatch
-    dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
-    dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipelineLayout, 0, 1, &compSet, 0, nullptr);
-    dev.dt.cmdDispatch(cmd, 512 / 8, 512 / 8, 1); // 8x8 local size assumed
-
-    // Transition: General -> Shader Read Only
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    REQ_VK(dev.dt.endCommandBuffer(cmd));
-
-    // Submit & Wait
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cmd, 0, nullptr};
-    resetFence(dev, render_context_->load_fence_);
-    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, render_context_->load_fence_));
-    waitForFenceInfinitely(dev, render_context_->load_fence_);
-
-    // -------------------------------------------------------------------------
-    // CLEANUP TEMPORARY RESOURCES
-    // -------------------------------------------------------------------------
-    dev.dt.destroyDescriptorPool(dev.hdl, compPool, nullptr);
-    dev.dt.destroyDescriptorSetLayout(dev.hdl, compDescLayout, nullptr);
-    dev.dt.destroyPipeline(dev.hdl, compPipeline, nullptr);
-    dev.dt.destroyPipelineLayout(dev.hdl, compPipelineLayout, nullptr);
-    dev.dt.destroyShaderModule(dev.hdl, compShader, nullptr);
-
-    LOG(config_, "GenerateBRDFLUT(): Done.");
-    return true;
-}
-
 bool BatchRenderer::Initialize() {
     LOG(config_, "Initialize(): starting");
 
@@ -1239,11 +1052,6 @@ bool BatchRenderer::Initialize() {
 
     // here load all the textures from models
     material_textures_= LoadMaterialTextures();
-
-    if(!GenerateBRDFLUT()){
-        LOG(config_, "Initialize(): GenerateBRDFLUT failed");
-        return false;
-    }
 
     if(!LoadEnvironmentMap()){
         LOG(config_, "Initialize(): LoadEnvironmentMap failed");
@@ -1616,8 +1424,11 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
     // OR the logic inside UpdateScenes handles offsets. 
     // Assuming shared_memory_ptr is the BASE of the shm block.
 
+    profiler_.Reset();
+
     // 1. Phase 1: Update Uniform Buffers (Camera/Light) directly from SHM
-    {
+    {   
+        ScopeTimer t(profiler_, "1. Update_From_SHM");
         ScopedNvtxRange range("1. Update_From_SHM", C_UPDATE);
         if (!UpdateScenesFromMemory(shared_memory_ptr, 0, max_geom, max_light)) {
              return MakeError(RenderError::MUJOCO_ERROR, "UpdateScenesFromMemory failed");
@@ -1627,6 +1438,7 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
     // 2. Phase 2: Record Commands (Iterating SHM Geoms directly)
     {
         ScopedNvtxRange range("2. Record_Cmds", C_RECORD);
+        ScopeTimer t(profiler_, "2. Record_CommandBuffers");
         // We pass the pointer down so Record functions can read the geoms
         if (!RecordCommandBuffersFromMemory(shared_memory_ptr, config_.batch_size)) { 
              return MakeError(RenderError::VULKAN_ERROR, "RecordCommandBuffers failed");
@@ -1635,6 +1447,7 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
 
     // 3. Phase 3: Submit (Reused)
     {
+        ScopeTimer t(profiler_, "3. Submit_And_Wait");
         ScopedNvtxRange range("3. Submit_Wait", C_SUBMIT);
         if (!SubmitAndWait()) {
              return MakeError(RenderError::VULKAN_ERROR, "SubmitAndWait failed");
@@ -1643,11 +1456,14 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
 
     // 4. Phase 4: Readback (Reused)
     {
+        ScopeTimer t(profiler_, "4. Readback");
         ScopedNvtxRange range("4. Readback", C_READ);
         if (!ReadbackResults()) {
              return MakeError(RenderError::VULKAN_ERROR, "ReadbackResults failed");
         }
     }
+
+    profiler_.Print();
     
     return RenderResult();
 }
@@ -1766,7 +1582,6 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
    
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
-    
     REQ_VK(dev.dt.resetCommandPool(dev.hdl, command_pool_, 0));
     VkCommandBuffer cmd = command_buffer_;
         // --- 1. Begin Recording & Render Pass ---
@@ -1774,19 +1589,11 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
 
-    // --- STATISTICS COUNTERS ---
-    // ---------------------------
-
-    /**  TODO: now use envs numbers of shadowpass and 3*envs numbers of main renderpass
-    *          they are all serial, so we should just use one renderpass for all shadows
-    *          and one for all main passes, using set viewport and scissor to switch between
-    *          different envs/cameras.
-    */
-
     // =========================================================================
     // STEP A: SHADOW PASS (Single Atlas Pass)
     // =========================================================================
     {
+        ScopeTimer t(profiler_, "2. Record_CommandBuffers.ShadowPass");
         // 1. Calculate Shadow Atlas Layout
         // Must match logic in CreateShadowResources
         int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
@@ -1875,6 +1682,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
         // STEP C: MAIN RENDER PASS (Single Atlas Pass)
         // =========================================================================
         {
+            ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass");
             // 1. Calculate Main Atlas Layout
             int total_views = config_.batch_size * SHM_NUM_CAMERAS;
             int main_cols = std::ceil(std::sqrt((float)total_views));
@@ -1893,20 +1701,27 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
             renderPassInfo.clearValueCount = clearValues.size();
             renderPassInfo.pClearValues = clearValues.data();
             
-            dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
+            {
+                ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BeginRenderPass");
+                dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            }
             // --- 2. Bind Pipeline & Global State ---
-            dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-
+            {
+                ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BindPipeline");
+                dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
+            }
             // Bind Vertices ONCE
             if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
-                VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-                vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
-
+                {
+                    ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BindVertexIndex");
+                    VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+                    VkDeviceSize offsets[] = { 0 };
+                    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+                    vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+                }
                 // Loop Envs
                 for (int i = 0; i < count; ++i) {
+                    ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops");
                     const EnvRenderSlot& slot = slots[i];
 
                     // Loop Cameras
@@ -1918,98 +1733,210 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
                         int grid_y = resource_idx / main_cols;
                         float vp_x = grid_x * (float)config_.frame_width;
                         float vp_y = grid_y * (float)config_.frame_height;
-
-                        VkViewport viewport = {vp_x, vp_y, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-                        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-                        VkRect2D scissor = {{ (int32_t)vp_x, (int32_t)vp_y }, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-                        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
-
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.SetView");
+                            VkViewport viewport = {vp_x, vp_y, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+                            dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+                            VkRect2D scissor = {{ (int32_t)vp_x, (int32_t)vp_y }, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+                            dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+                        }
                         // Re-bind Descriptor Sets for this camera (UBOs are per-camera/slot)
-                        std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
-                        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                                0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.BindDescriptor");
+                            std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
+                            dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                                    0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+                        }
                         // Draw Geometry (with Culling)
-                        const auto& cull_info = camera_cull_info_[resource_idx];
+                        // const auto& cull_info = camera_cull_info_[resource_idx];
                         int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
 
-                        for (int g = 0; g < active_geoms; ++g) {
+                        for (int g = 0; g < active_geoms; ++g)
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops");
+                            //profiler_.total_geoms++;
+
                             const ShmGeom& geom = slot.geoms[g];
 
-                            std::string mesh_name = GetMeshName(geom, models_[i]);
-                            auto it = global_mesh_cache_.find(mesh_name);
-                            if (it == global_mesh_cache_.end()) continue;
-                            const MeshEntry& entry = it->second;
+                            // --------------------------------------------------
+                            // Mesh Name + Mesh Cache Lookup
+                            // --------------------------------------------------
+                            std::string mesh_name;
+                            const MeshEntry* entry = nullptr;
 
-                            // Culling
-                            auto it2 = global_aabb_cache_.find(mesh_name);
-                            if (it2 == global_aabb_cache_.end()) continue;
-                            if (it2 != global_aabb_cache_.end()) {
-                                const AABB& local_aabb = it2->second;
-                                glm::mat4 model_mat = ComputeModelMatrix(geom);
-                                // 1. Calculate World Space AABB
-                                // Transform Center
-                                glm::vec3 local_center = (glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z) + 
-                                                        glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z)) * 0.5f;
-                                glm::vec3 local_extent = (glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z) - 
-                                                        glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z)) * 0.5f;
-                                                        
-                                glm::vec3 world_center = glm::vec3(model_mat * glm::vec4(local_center, 1.0f));
-                                
-                                // Transform Extent (using absolute rotation matrix to bound the rotated box)
-                                glm::vec3 world_extent;
-                                for (int k = 0; k < 3; k++) {
-                                    world_extent[k] = 
-                                        std::abs(model_mat[0][k]) * local_extent.x +
-                                        std::abs(model_mat[1][k]) * local_extent.y +
-                                        std::abs(model_mat[2][k]) * local_extent.z;
+                            {
+                               ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.MeshLookup");
+
+                                mesh_name = GetMeshName(geom, models_[i]);
+                                auto it = global_mesh_cache_.find(mesh_name);
+                                if (it == global_mesh_cache_.end())
+                                    continue;
+
+                                entry = &it->second;
+                            }
+
+                            // --------------------------------------------------
+                            // Compute Model Matrix
+                            // --------------------------------------------------
+                            glm::mat4 model_mat;
+
+                            {
+                                //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.ComputeModelMatrix");
+                                model_mat = ComputeModelMatrix(geom);
+                            }
+                            #if 0
+                            {
+                                // --------------------------------------------------
+                                // AABB Lookup
+                                // --------------------------------------------------
+                                const AABB* local_aabb_ptr = nullptr;
+
+                                {
+                                    ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.AABBLookup");
+
+                                    auto it2 = global_aabb_cache_.find(mesh_name);
+                                    if (it2 == global_aabb_cache_.end())
+                                        continue;
+
+                                    local_aabb_ptr = &it2->second;
                                 }
-                    
-                                glm::vec3 world_min = world_center - world_extent;
-                                glm::vec3 world_max = world_center + world_extent;
-                    
-                                // 2. Perform Frustum Check
-                                // 
-                                if (!IsAABBVisible(cull_info.frustum, world_min, world_max)) {
-                                    continue; // SKIP DRAW CALL
+
+                                const AABB& local_aabb = *local_aabb_ptr;
+
+                                //--------------------------------------------------
+                                //World AABB Transform
+                                //--------------------------------------------------
+                                glm::vec3 world_min, world_max;
+
+                                {
+                                    //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.WorldAABB");
+
+                                    glm::vec3 local_center =
+                                        (glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.min.z) +
+                                        glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z)) * 0.5f;
+
+                                    glm::vec3 local_extent =
+                                        (glm::vec3(local_aabb.max.x, local_aabb.max.y, local_aabb.max.z) -
+                                        glm::vec3(local_aabb.min.x, local_aabb.min.y, local_aabb.max.z)) * 0.5f;
+
+                                    glm::vec3 world_center =
+                                        glm::vec3(model_mat * glm::vec4(local_center, 1.0f));
+
+                                    glm::vec3 world_extent;
+
+                                    for (int k = 0; k < 3; k++)
+                                    {
+                                        world_extent[k] =
+                                            std::abs(model_mat[0][k]) * local_extent.x +
+                                            std::abs(model_mat[1][k]) * local_extent.y +
+                                            std::abs(model_mat[2][k]) * local_extent.z;
+                                    }
+
+                                    world_min = world_center - world_extent;
+                                    world_max = world_center + world_extent;
+                                }
+
+                                // --------------------------------------------------
+                                // Frustum Culling
+                                // --------------------------------------------------
+                                bool visible;
+
+                                {
+                                    ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.FrustumTest");
+                                    visible = IsAABBVisible(cull_info.frustum, world_min, world_max);
+                                }
+
+                                if (!visible)
+                                {
+                                    // profiler_.culled_geoms++;
+                                    // continue;
+                                }
+
+                                profiler_.visible_geoms++;
+
+                            }
+                            #endif
+
+                            // --------------------------------------------------
+                            // Texture Resolve
+                            // --------------------------------------------------
+                            int texture_type = -1;
+                            int texture_index = -1;
+
+                            {
+                                ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.TextureResolve");
+
+                                int resolved_tex_id = -1;
+                                if (geom.matid >= 0)
+                                    resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
+
+                                if (resolved_tex_id >= 0 && i < texture_offsets_.size())
+                                {
+                                    int global_tex_id = texture_offsets_[i] + resolved_tex_id;
+
+                                    if (global_tex_id < material_textures_.global_texture_lookup.size())
+                                    {
+                                        const auto& tex_map =
+                                            material_textures_.global_texture_lookup[global_tex_id];
+
+                                        texture_type =
+                                            tex_map.index_in_array >= 0 ? tex_map.type : -1;
+
+                                        texture_index = tex_map.index_in_array;
+                                    }
                                 }
                             }
 
-                            int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
-                            int shadow_row_idx = i / shadow_cols; // i is env index
-                            int shadow_col_idx = i % shadow_cols;
+                            // --------------------------------------------------
+                            // Push Constants + Draw
+                            // --------------------------------------------------
+                            {
+                                ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.DrawRecord");
 
-                            float shadow_scale = 1.0f / (float)shadow_cols;
-                            float shadow_offset_x = (float)shadow_col_idx * shadow_scale;
-                            float shadow_offset_y = (float)shadow_row_idx * shadow_scale;
+                                int shadow_cols =
+                                    std::ceil(std::sqrt((float)config_.batch_size));
 
-                            // Push Constants
-                            PushConstants pc{};
-                            pc.model = ComputeModelMatrix(geom);
-                            pc.rgba = glm::vec4(geom.rgba[0], geom.rgba[1], geom.rgba[2], geom.rgba[3]);
-                            pc.specular = geom.specular;
-                            pc.emission = geom.emission;
-                            pc.shininess = geom.shininess;
-                            pc.reflectance = geom.reflectance;
-                            pc.shadow_atlas_params = glm::vec4(shadow_offset_x, shadow_offset_y, shadow_scale, 0.0f);
-                            
-                            // Texture Lookup (Same as before)
-                            int resolved_tex_id = -1;
-                            if (geom.matid >= 0) resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
-                            
-                            if (resolved_tex_id >= 0 && i < texture_offsets_.size()) {
-                                int global_tex_id = texture_offsets_[i] + resolved_tex_id;
-                                if (global_tex_id < material_textures_.global_texture_lookup.size()) {
-                                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                                    pc.texture_type = tex_map.index_in_array >= 0 ? tex_map.type : -1;
-                                    pc.texture_index = tex_map.index_in_array;
-                                } else { pc.texture_type = -1; pc.texture_index = -1; }
-                            } else { pc.texture_type = -1; pc.texture_index = -1; }
+                                int shadow_row_idx = i / shadow_cols;
+                                int shadow_col_idx = i % shadow_cols;
 
-                            dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pc);
+                                float shadow_scale = 1.0f / (float)shadow_cols;
+                                float shadow_offset_x = shadow_col_idx * shadow_scale;
+                                float shadow_offset_y = shadow_row_idx * shadow_scale;
 
-                            vkCmdDrawIndexed(cmd, entry.index_count, 1, entry.index_offset, entry.vertex_offset, 0);
+                                PushConstants pc{};
+                                pc.model = model_mat;
+                                pc.rgba = glm::vec4(
+                                    geom.rgba[0],
+                                    geom.rgba[1],
+                                    geom.rgba[2],
+                                    geom.rgba[3]);
+
+                                pc.specular = geom.specular;
+                                pc.emission = geom.emission;
+                                pc.shininess = geom.shininess;
+                                pc.reflectance = geom.reflectance;
+                                pc.shadow_atlas_params =
+                                    glm::vec4(shadow_offset_x, shadow_offset_y, shadow_scale, 0.0f);
+
+                                pc.texture_type = texture_type;
+                                pc.texture_index = texture_index;
+
+                                dev.dt.cmdPushConstants(
+                                    cmd,
+                                    pipeline_layout_,
+                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    0,
+                                    sizeof(PushConstants),
+                                    &pc);
+
+                                vkCmdDrawIndexed(
+                                    cmd,
+                                    entry->index_count,
+                                    1,
+                                    entry->index_offset,
+                                    entry->vertex_offset,
+                                    0);
+                            }
                         }
                     }
                 }
@@ -2686,7 +2613,7 @@ bool BatchRenderer::CreateBuffers() {
         lightBufferInfo.offset = 0;
         lightBufferInfo.range = sizeof(LightUBO);
         
-        std::array<VkWriteDescriptorSet, 5> writes{};
+        std::array<VkWriteDescriptorSet, 4> writes{};
 
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor_sets_[i];
@@ -2716,11 +2643,11 @@ bool BatchRenderer::CreateBuffers() {
         writes[2].descriptorCount = 1;
         writes[2].pImageInfo = &shadowInfo;
 
-        // Write 3: BRDF LUT
-        VkDescriptorImageInfo brdfInfo{};
-        brdfInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        brdfInfo.imageView = brdf_lut_.view;
-        brdfInfo.sampler = brdf_lut_.sampler;
+        // Write 3: Irradiance Cubemap (Diffuse IBL)
+        VkDescriptorImageInfo irrInfo{};
+        irrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        irrInfo.imageView = env_map_.view_irradiance;
+        irrInfo.sampler = env_map_.sampler;
         
         writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[3].dstSet = descriptor_sets_[i];
@@ -2728,21 +2655,7 @@ bool BatchRenderer::CreateBuffers() {
         writes[3].dstArrayElement = 0;
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[3].descriptorCount = 1;
-        writes[3].pImageInfo = &brdfInfo;
-
-        // Write 4: Environment Cubemap
-        VkDescriptorImageInfo envInfo{};
-        envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        envInfo.imageView = env_map_.view_cube;
-        envInfo.sampler = env_map_.sampler;
-
-        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[4].dstSet = descriptor_sets_[i];
-        writes[4].dstBinding = 4;
-        writes[4].dstArrayElement = 0;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[4].descriptorCount = 1;
-        writes[4].pImageInfo = &envInfo;
+        writes[3].pImageInfo = &irrInfo;
         
         dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
@@ -3037,16 +2950,12 @@ void BatchRenderer::DestroyVulkanResources() {
 
     dev.dt.destroySampler(dev.hdl, texture_sampler_, nullptr);
 
-    if (brdf_lut_.view != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, brdf_lut_.view, nullptr);
-    if (brdf_lut_.texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, brdf_lut_.texture.image, nullptr);
-    if (brdf_lut_.memory != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, brdf_lut_.memory, nullptr);
-    if (brdf_lut_.sampler != VK_NULL_HANDLE) dev.dt.destroySampler(dev.hdl, brdf_lut_.sampler, nullptr);
-
-    if (env_map_.view_cube != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, env_map_.view_cube, nullptr);
+    // Irradiance Cubemap resources
+    if (env_map_.view_irradiance != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, env_map_.view_irradiance, nullptr);
     if (env_map_.view_2d != VK_NULL_HANDLE) dev.dt.destroyImageView(dev.hdl, env_map_.view_2d, nullptr);
-    if (env_map_.cubemap_texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, env_map_.cubemap_texture.image, nullptr);
+    if (env_map_.irradiance_texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, env_map_.irradiance_texture.image, nullptr);
     if (env_map_.env_2d_texture.image != VK_NULL_HANDLE) dev.dt.destroyImage(dev.hdl, env_map_.env_2d_texture.image, nullptr);
-    if (env_map_.memory_cube != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, env_map_.memory_cube, nullptr);
+    if (env_map_.memory_irradiance != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, env_map_.memory_irradiance, nullptr);
     if (env_map_.memory_2d != VK_NULL_HANDLE) dev.dt.freeMemory(dev.hdl, env_map_.memory_2d, nullptr);
     if (env_map_.sampler != VK_NULL_HANDLE) dev.dt.destroySampler(dev.hdl, env_map_.sampler, nullptr);
 

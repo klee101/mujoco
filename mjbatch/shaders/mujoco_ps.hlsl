@@ -65,13 +65,10 @@ SamplerState g_sampler : register(s1, space1);
 Texture2D g_shadowMap : register(t2, space0);
 SamplerState g_shadowSampler : register(s2, space0);
 
-// [NEW] BRDF LUT for Split-Sum Approximation
-// This matches the C++ descriptor set binding 3
-Texture2D g_brdfLUT : register(t3, space0); 
-SamplerState g_brdfSampler : register(s3, space0); // Typically linear clamp
-
-TextureCube g_envMap : register(t4, space0);
-SamplerState g_envSampler : register(s4, space0);
+// Irradiance Cubemap for Diffuse IBL
+// Replaces BRDF LUT + EnvMap specular
+TextureCube g_irradianceMap : register(t3, space0);
+SamplerState g_irrSampler : register(s3, space0);
 
 struct PSInput {
     float4 position : SV_Position;
@@ -132,44 +129,24 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness) {
     return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// [NEW] IBL Contribution Function
-// Calculates Diffuse Irradiance + Specular Image Based Lighting
-float3 IBL_Contribution(
+// [NEW] IBL Contribution Function (Diffuse Only)
+// Calculates Diffuse Irradiance from precomputed Irradiance Cubemap
+float3 IBL_Contribution_Diffuse(
     float3 N, 
     float3 V, 
-    float3 R, 
     float3 albedo, 
     float3 F0, 
     float roughness, 
-    float metallic,
-    int envMapIndex
+    float metallic
 ) {
-    // 1. Diffuse IBL (Irradiance)
-    // We approximate irradiance by sampling the environment map at a very high mip level.
-    // This blurs the details, leaving average color.
-    
     float3 kS = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     float3 kD = 1.0 - kS;
-    kD *= (1.0 - metallic); // Metals have no diffuse
+    kD *= (1.0 - metallic);
 
-    // [FIX] Cubemap 采样: 直接使用法线 N 作为方向
-    // 使用高 Mip Level (6.0) 模拟辐照度模糊
-    float3 irradiance = g_envMap.SampleLevel(g_envSampler, N, 6.0).rgb; 
+    float3 irradiance = g_irradianceMap.Sample(g_irrSampler, N).rgb; 
     float3 diffuse = irradiance * albedo;
 
-    // 2. Specular IBL
-    // A. Prefiltered Map: 直接使用反射向量 R 采样 Cubemap
-    const float MAX_REFLECTION_LOD = 8.0; 
-    float lod = roughness * MAX_REFLECTION_LOD;
-    float3 prefilteredColor = g_envMap.SampleLevel(g_envSampler, R, lod).rgb;
-
-    // B. BRDF LUT (保持不变)
-    float NdotV = max(dot(N, V), 0.0);
-    float2 envBRDF = g_brdfLUT.Sample(g_brdfSampler, float2(NdotV, roughness)).rg;
-
-    float3 specular = prefilteredColor * (F0 * envBRDF.x + envBRDF.y);
-
-    return (kD * diffuse + specular); 
+    return (kD * diffuse); 
 }
 
 
@@ -379,29 +356,21 @@ float4 PSMain(PSInput input) : SV_Target {
     }
 
     // --------------------------------------------------------
-    // IBL Contribution
+    // IBL Contribution (Diffuse Only)
     // --------------------------------------------------------
-    // float3 ambientIBL = float3(0,0,0);
+    float3 ambientIBL = float3(0,0,0);
     
-    // // Determine which environment map to use. 
-    // // Logic: If the object has a texture of type 1 (EnvMap), use it for IBL.
-    // // Ideally, you should pass a 'GlobalSkyboxIndex' in PushConstants if no local env map exists.
-    // int envMapIdx = (pushConst.texture_type == 1) ? pushConst.texture_index : 0;
-    
-    // if (envMapIdx >= 0) {
-    //     ambientIBL = IBL_Contribution(N, V, R, base_color.rgb, F0, roughness, metallic, envMapIdx);
-    //     ambientIBL *= IBL_INTENSITY;
-    // } else {
-    //     ambientIBL = totalAmbient; 
-    // }
+    // Use Irradiance Cubemap for diffuse IBL
+    ambientIBL = IBL_Contribution_Diffuse(N, V, base_color.rgb, F0, roughness, metallic);
+    ambientIBL *= IBL_INTENSITY;
 
     // --------------------------------------------------------
     // Final Combination
     // --------------------------------------------------------
     float3 final_color = totalDiffuse + totalSpecular;
     
-    // Replace constant ambient with IBL if available
-    final_color += totalAmbient;
+    // Replace constant ambient with IBL
+    final_color += ambientIBL;
 
     final_color += base_color.rgb * pushConst.material_emission;
 

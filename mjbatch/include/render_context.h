@@ -4,9 +4,21 @@
 #include "memory.h"
 #include "backend.h"
 #include <vulkan/vulkan.h>
+#include <mutex>
+#include <condition_variable>
+#include <array>
 
 namespace mujoco{
 namespace mjbatch {
+
+constexpr int CMD_RING_SIZE = 4;
+
+struct CmdSlot {
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkSemaphore ready = VK_NULL_HANDLE;
+    bool pending = false;
+};
 
 struct RenderContext
 {
@@ -15,6 +27,7 @@ struct RenderContext
     MemoryAllocator allocator;
 
     VkQueue renderQueue = VK_NULL_HANDLE;
+    VkQueue transferQueue = VK_NULL_HANDLE;
 
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkRenderPass shadowPass = VK_NULL_HANDLE;
@@ -22,6 +35,20 @@ struct RenderContext
     VkCommandPool load_cmd_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer load_cmd_ = VK_NULL_HANDLE;
     VkFence load_fence_ = VK_NULL_HANDLE;
+
+    VkCommandPool transfer_cmd_pool_ = VK_NULL_HANDLE;
+    VkCommandBuffer transfer_cmd_ = VK_NULL_HANDLE;
+    VkFence transfer_fence_ = VK_NULL_HANDLE;
+    VkSemaphore transfer_semaphore_ = VK_NULL_HANDLE;
+    uint32_t transferQF = VK_QUEUE_FAMILY_IGNORED;
+
+    VkCommandPool ring_cmd_pool_ = VK_NULL_HANDLE;
+    std::array<CmdSlot, CMD_RING_SIZE> cmd_ring_;
+    int ring_record_idx_ = 0;
+    int ring_submit_idx_ = 0;
+    std::mutex ring_mutex_;
+    std::condition_variable ring_cv_;
+    int ring_available_slots_ = CMD_RING_SIZE;
 
     uint32_t num_worlds_ = 0;
 

@@ -1420,48 +1420,46 @@ bool BatchRenderer::RecordCommandBuffers(int count) {
 RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light) {
     if (!initialized_) return MakeError(RenderError::INVALID_CONFIG, "Renderer not initialized");
     
-    // We ignore 'batch_idx' here assuming the ptr covers the whole batch 
-    // OR the logic inside UpdateScenes handles offsets. 
-    // Assuming shared_memory_ptr is the BASE of the shm block.
-
     profiler_.Reset();
+    int current_swap = swap_write_idx_;
 
-    // 1. Phase 1: Update Uniform Buffers (Camera/Light) directly from SHM
+    // Phase 1: Async UBO upload via transfer queue
     {   
-        ScopeTimer t(profiler_, "1. Update_From_SHM");
-        ScopedNvtxRange range("1. Update_From_SHM", C_UPDATE);
+        ScopeTimer t(profiler_, "1.UpdateAsync");
+        ScopedNvtxRange range("1. UpdateAsync", C_UPDATE);
         if (!UpdateScenesFromMemory(shared_memory_ptr, 0, max_geom, max_light)) {
              return MakeError(RenderError::MUJOCO_ERROR, "UpdateScenesFromMemory failed");
         }
     }
 
-    // 2. Phase 2: Record Commands (Iterating SHM Geoms directly)
+    // Phase 2: Record with current swap slot's framebuffer
     {
-        ScopedNvtxRange range("2. Record_Cmds", C_RECORD);
-        ScopeTimer t(profiler_, "2. Record_CommandBuffers");
-        // We pass the pointer down so Record functions can read the geoms
+        ScopedNvtxRange range("2. Record", C_RECORD);
+        ScopeTimer t(profiler_, "2.Record");
         if (!RecordCommandBuffersFromMemory(shared_memory_ptr, config_.batch_size)) { 
              return MakeError(RenderError::VULKAN_ERROR, "RecordCommandBuffers failed");
         }
     }
 
-    // 3. Phase 3: Submit (Reused)
+    // Phase 3: Submit and wait
     {
-        ScopeTimer t(profiler_, "3. Submit_And_Wait");
+        ScopeTimer t(profiler_, "3.Submit");
         ScopedNvtxRange range("3. Submit_Wait", C_SUBMIT);
         if (!SubmitAndWait()) {
              return MakeError(RenderError::VULKAN_ERROR, "SubmitAndWait failed");
         }
     }
 
-    // 4. Phase 4: Readback (Reused)
+    // Phase 4: Async Readback (non-blocking)
     {
-        ScopeTimer t(profiler_, "4. Readback");
-        ScopedNvtxRange range("4. Readback", C_READ);
-        if (!ReadbackResults()) {
-             return MakeError(RenderError::VULKAN_ERROR, "ReadbackResults failed");
-        }
+        ScopeTimer t(profiler_, "4.ReadbackAsync");
+        ScopedNvtxRange range("4. ReadbackAsync", C_READ);
+        SubmitReadbackAsync(current_swap, frame_counter_);
     }
+
+    // Rotate write slot
+    swap_write_idx_ = (swap_write_idx_ + 1) % SWAP_COUNT;
+    frame_counter_++;
 
     profiler_.Print();
     
@@ -1476,9 +1474,15 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     // Geometry is read directly in the Record phase.
 
     std::vector<VkBufferCopy> copy_regions; 
-    // Using a separate staging loop might be cleaner, but reusing existing infrastructure:
     
-    VkCommandBuffer cmd = render_context_->load_cmd_;
+    // Use transfer queue for async UBO updates
+    VkCommandBuffer cmd = render_context_->transfer_cmd_;
+    
+    // Wait for previous transfer to complete
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &render_context_->transfer_fence_, VK_TRUE, UINT64_MAX));
+    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &render_context_->transfer_fence_));
+    
+    REQ_VK(dev.dt.resetCommandPool(dev.hdl, render_context_->transfer_cmd_pool_, 0));
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
@@ -1569,10 +1573,13 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &render_context_->transfer_semaphore_;
     
-    // Use renderQueue to submit memory transfers (simple sync)
-    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, VK_NULL_HANDLE));
-    dev.dt.deviceWaitIdle(dev.hdl); 
+    // Submit to transfer queue, signal semaphore when done
+    REQ_VK(dev.dt.queueSubmit(render_context_->transferQueue, 1, &submitInfo, render_context_->transfer_fence_));
+    
+    // No longer wait idle - render queue will wait on semaphore
     
     return true;
 }
@@ -1582,6 +1589,13 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
    
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
+    SwapSlot& wslot = swap_slots_[swap_write_idx_];
+    {
+        std::unique_lock<std::mutex> lk(swap_mutex_);
+        swap_cv_.wait(lk, [&] { return wslot.state == SwapSlot::State::FREE; });
+        wslot.state = SwapSlot::State::RENDERING;
+    }
+
     REQ_VK(dev.dt.resetCommandPool(dev.hdl, command_pool_, 0));
     VkCommandBuffer cmd = command_buffer_;
         // --- 1. Begin Recording & Render Pass ---
@@ -1692,7 +1706,7 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
         
             VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
             renderPassInfo.renderPass = render_context_->renderPass;
-            renderPassInfo.framebuffer = framebuffer_; // [CHANGE] Single Atlas FB
+            renderPassInfo.framebuffer = wslot.framebuffer;
             renderPassInfo.renderArea.extent = {atlas_w, atlas_h};
             
             std::array<VkClearValue, 2> clearValues{};
@@ -1955,12 +1969,18 @@ bool BatchRenderer::SubmitAndWait() {
     // --- 1. reset Fence ---
     REQ_VK(dev.dt.resetFences(dev.hdl, 1, &render_fence_));
 
-    // --- 2. prepare Batching submitinfo ---
+    // --- 2. Wait for transfer semaphore (UBO updates must be complete) ---
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+    // --- 3. prepare Batching submitinfo ---
     VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &render_context_->transfer_semaphore_;
+    submitInfo.pWaitDstStageMask = &waitStage;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &command_buffer_; 
 
-    // --- 3. One Submit ---
+    // --- 4. One Submit ---
     VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, render_fence_);
     
     if (submitResult != VK_SUCCESS) {
@@ -2429,69 +2449,77 @@ bool BatchRenderer::CreateFramebuffers() {
     Device &dev = *device_;
     MemoryAllocator &allocator = render_context_->allocator;
 
-    // 1. Calculate Atlas Dimensions (Grid Layout)
-    // We need to fit (BatchSize * Cameras) views into one texture.
     int total_views = config_.batch_size * SHM_NUM_CAMERAS;
-    
-    // Calculate grid columns and rows to make it roughly square
     int cols = std::ceil(std::sqrt((float)total_views));
     int rows = std::ceil((float)total_views / cols);
-
     uint32_t total_width = cols * config_.frame_width;
     uint32_t total_height = rows * config_.frame_height;
-    
-    // Store atlas layout info if needed, or recalculate in Record. 
-    // Ideally, store 'atlas_cols_' in class, but we calculate locally for now.
 
-    // 2. Create Single Large Color Image
-    color_image_.emplace(allocator.makeColorAttachment(
-        total_width, total_height, 1, VK_FORMAT_R8G8B8A8_UNORM));
+    VkCommandBufferAllocateInfo alloc_info{};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = render_context_->ring_cmd_pool_;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = SWAP_COUNT;
 
-    // 3. Create Single Large Depth Image
-    if (config_.enable_depth) {
-        depth_image_.emplace(allocator.makeDepthAttachment(
-            total_width, total_height, 1, VK_FORMAT_D32_SFLOAT));
+    std::array<VkCommandBuffer, SWAP_COUNT> rb_cmds;
+    REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &alloc_info, rb_cmds.data()));
+
+    for (int s = 0; s < SWAP_COUNT; ++s) {
+        auto& slot = swap_slots_[s];
+
+        slot.color_image.emplace(allocator.makeColorAttachment(
+            total_width, total_height, 1, VK_FORMAT_R8G8B8A8_UNORM));
+
+        if (config_.enable_depth) {
+            slot.depth_image.emplace(allocator.makeDepthAttachment(
+                total_width, total_height, 1, VK_FORMAT_D32_SFLOAT));
+        }
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        viewInfo.image = slot.color_image->image;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &slot.color_view));
+
+        if (config_.enable_depth && slot.depth_image) {
+            viewInfo.image = slot.depth_image->image;
+            viewInfo.format = VK_FORMAT_D32_SFLOAT;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &slot.depth_view));
+        }
+
+        std::vector<VkImageView> attachments = {slot.color_view};
+        if (config_.enable_depth && slot.depth_view != VK_NULL_HANDLE) {
+            attachments.push_back(slot.depth_view);
+        }
+
+        VkFramebufferCreateInfo fbInfo{};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = render_context_->renderPass;
+        fbInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        fbInfo.pAttachments = attachments.data();
+        fbInfo.width = total_width;
+        fbInfo.height = total_height;
+        fbInfo.layers = 1;
+        REQ_VK(dev.dt.createFramebuffer(dev.hdl, &fbInfo, nullptr, &slot.framebuffer));
+
+        size_t per_frame = config_.frame_width * config_.frame_height * 4;
+        slot.staging_bufs.reserve(total_views);
+        for (size_t i = 0; i < total_views; ++i) {
+            slot.staging_bufs.emplace_back(allocator.makeStagingBuffer2(per_frame));
+        }
+
+        slot.readback_cmd = rb_cmds[s];
+        slot.readback_fence = makeFence(dev, true);
+        slot.state = SwapSlot::State::FREE;
     }
-
-    // 4. Create Image Views
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    // Color View
-    viewInfo.image = color_image_->image;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &color_image_view_));
-
-    // Depth View
-    if (config_.enable_depth) {
-        viewInfo.image = depth_image_->image;
-        viewInfo.format = VK_FORMAT_D32_SFLOAT;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        REQ_VK(dev.dt.createImageView(dev.hdl, &viewInfo, nullptr, &depth_image_view_));
-    }
-
-    // 5. Create Single Large Framebuffer
-    std::vector<VkImageView> attachments = {color_image_view_};
-    if (config_.enable_depth && depth_image_view_ != VK_NULL_HANDLE) {
-        attachments.push_back(depth_image_view_);
-    }
-
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = render_context_->renderPass;
-    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    framebufferInfo.pAttachments = attachments.data();
-    framebufferInfo.width = total_width;
-    framebufferInfo.height = total_height;
-    framebufferInfo.layers = 1;
-
-    REQ_VK(dev.dt.createFramebuffer(dev.hdl, &framebufferInfo, nullptr, &framebuffer_));
 
     return true;
 }
@@ -3056,6 +3084,144 @@ void BatchRenderer::DestroyVulkanResources() {
     
     
     LOG(config_, "DestroyVulkanResources(): resources released");
+}
+
+bool BatchRenderer::UpdateAsync(const uint8_t* shm_ptr, int max_geom, int max_light) {
+    return UpdateScenesFromMemory(shm_ptr, 0, max_geom, max_light);
+}
+
+int BatchRenderer::RecordNext(const uint8_t* shm_ptr) {
+    return 0;
+}
+
+bool BatchRenderer::SubmitNext() {
+    return SubmitAndWait();
+}
+
+bool BatchRenderer::WaitSlot(int slot_idx) {
+    Device &dev = *device_;
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &render_fence_, VK_TRUE, UINT64_MAX));
+    return true;
+}
+
+bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
+    Device &dev = *device_;
+    SwapSlot& slot = swap_slots_[swap_idx];
+
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &slot.readback_fence, VK_TRUE, UINT64_MAX));
+    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &slot.readback_fence));
+
+    VkCommandBuffer cmd = slot.readback_cmd;
+    REQ_VK(dev.dt.resetCommandPool(dev.hdl, render_context_->ring_cmd_pool_, 0));
+
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &bi));
+
+    int total_views = config_.batch_size * SHM_NUM_CAMERAS;
+    int cols = std::ceil(std::sqrt((float)total_views));
+
+    VkImageMemoryBarrier barrier1{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier1.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier1.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier1.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier1.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier1.image = slot.color_image->image;
+    barrier1.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier1);
+
+    for (int i = 0; i < total_views; ++i) {
+        int gx = i % cols, gy = i / cols;
+        VkBufferImageCopy region{};
+        region.imageOffset = {(int32_t)(gx * config_.frame_width),
+                             (int32_t)(gy * config_.frame_height), 0};
+        region.imageExtent = {(uint32_t)config_.frame_width,
+                             (uint32_t)config_.frame_height, 1};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        dev.dt.cmdCopyImageToBuffer(cmd, slot.color_image->image,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.staging_bufs[i].buffer, 1, &region);
+    }
+
+    VkImageMemoryBarrier barrier2{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier2.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier2.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier2.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier2.image = slot.color_image->image;
+    barrier2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    dev.dt.cmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier2);
+
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
+
+    slot.step_id = step_id;
+    slot.state = SwapSlot::State::READBACK_PENDING;
+
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &si, slot.readback_fence));
+
+    return true;
+}
+
+void BatchRenderer::ReadbackThreadFn() {
+    while (readback_running_) {
+        for (int s = 0; s < SWAP_COUNT; ++s) {
+            SwapSlot& slot = swap_slots_[s];
+            if (slot.state != SwapSlot::State::READBACK_PENDING) continue;
+
+            VkResult r = device_->dt.waitForFences(device_->hdl, 1,
+                &slot.readback_fence, VK_TRUE, 1000000);
+            if (r != VK_SUCCESS) continue;
+
+            int total_views = config_.batch_size * SHM_NUM_CAMERAS;
+            std::vector<VkMappedMemoryRange> ranges;
+            for (int i = 0; i < total_views; ++i) {
+                VkMappedMemoryRange mr{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+                mr.memory = slot.staging_bufs[i].getMemHdl();
+                mr.size = VK_WHOLE_SIZE;
+                ranges.push_back(mr);
+            }
+            device_->dt.invalidateMappedMemoryRanges(
+                device_->hdl, (uint32_t)ranges.size(), ranges.data());
+
+            std::vector<FrameObservation> obs(total_views);
+            for (int i = 0; i < total_views; ++i) {
+                obs[i] = {
+                    .data = (const uint8_t*)slot.staging_bufs[i].ptr,
+                    .width = (uint32_t)config_.frame_width,
+                    .height = (uint32_t)config_.frame_height,
+                    .stride_bytes = (uint32_t)(config_.frame_width * 4),
+                    .total_bytes = (size_t)(config_.frame_width * config_.frame_height * 4)
+                };
+            }
+
+            if (readback_callback_) {
+                readback_callback_(slot.step_id, obs);
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(swap_mutex_);
+                slot.state = SwapSlot::State::FREE;
+            }
+            swap_cv_.notify_all();
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+}
+
+void BatchRenderer::StartReadbackThread() {
+    readback_running_ = true;
+    readback_thread_ = std::thread(&BatchRenderer::ReadbackThreadFn, this);
+}
+
+void BatchRenderer::StopReadbackThread() {
+    readback_running_ = false;
+    if (readback_thread_.joinable()) {
+        readback_thread_.join();
+    }
 }
 
 const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {

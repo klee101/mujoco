@@ -68,6 +68,20 @@ PYBIND11_MODULE(mjb, m) {
         .def("render_from_shm", [](BatchRenderer& self, uintptr_t address, int batch_idx, int max_geom, int max_light) {
             return self.RenderFromMemory(reinterpret_cast<uint8_t*>(address), batch_idx, max_geom, max_light).IsSuccess();
         })
+        
+        // Async interfaces for pipeline decoupling
+        .def("update_async", [](BatchRenderer& self, uintptr_t address, int max_geom, int max_light) {
+            return self.UpdateAsync(reinterpret_cast<uint8_t*>(address), max_geom, max_light);
+        }, py::arg("shm_ptr"), py::arg("max_geom"), py::arg("max_light"))
+        
+        .def("record_next", [](BatchRenderer& self, uintptr_t address) {
+            return self.RecordNext(reinterpret_cast<const uint8_t*>(address));
+        }, py::arg("shm_ptr"))
+        
+        .def("submit_next", &BatchRenderer::SubmitNext)
+        
+        .def("wait_slot", &BatchRenderer::WaitSlot, py::arg("slot_idx"))
+        
         .def("get_image", [](BatchRenderer& self, int batch_idx, int cam_idx) {
              int flat_idx = batch_idx * 3 + cam_idx; 
             

@@ -293,6 +293,21 @@ struct FrameObservation {
     size_t total_bytes;      
 };
 
+constexpr int SWAP_COUNT = 3;
+
+struct SwapSlot {
+    std::optional<mujoco::mjbatch::LocalImage> color_image;
+    std::optional<mujoco::mjbatch::LocalImage> depth_image;
+    VkImageView color_view = VK_NULL_HANDLE;
+    VkImageView depth_view = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    std::vector<mujoco::mjbatch::HostBuffer> staging_bufs;
+    VkCommandBuffer readback_cmd = VK_NULL_HANDLE;
+    VkFence readback_fence = VK_NULL_HANDLE;
+    enum class State { FREE, RENDERING, READBACK_PENDING, READY } state = State::FREE;
+    int step_id = -1;
+};
+
 struct EnvMapResources {
     mujoco::mjbatch::LocalTexture env_2d_texture;      // 临时，上传 HDR 后可释放
     mujoco::mjbatch::LocalTexture irradiance_texture;   // Irradiance Cubemap (32x32)
@@ -331,6 +346,12 @@ public:
     * NOTE: used to connect with Robosuite
     */
     RenderResult RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light);
+
+    // Fine-grained async interfaces
+    bool UpdateAsync(const uint8_t* shm_ptr, int max_geom, int max_light);
+    int RecordNext(const uint8_t* shm_ptr);
+    bool SubmitNext();
+    bool WaitSlot(int slot_idx);
 
     /* GetRGBFrame - Get pointers to individual frames in the batch
     *  zero-copy readback: directly return pointer to mapped staging buffer
@@ -408,6 +429,12 @@ private:
     * NOTE: frames stores all batch_size * num_cameras images
     */
     bool ReadbackResults();
+
+    // Async readback methods
+    bool SubmitReadbackAsync(int swap_idx, int step_id);
+    void ReadbackThreadFn();
+    void StartReadbackThread();
+    void StopReadbackThread();
 
     // Vulkan resource management
     bool CreateVulkanInstance();
@@ -524,6 +551,18 @@ private:
     VkSampler shadow_sampler_;
 
     VkFence render_fence_;
+
+    // Triple buffer swap slots
+    std::array<SwapSlot, SWAP_COUNT> swap_slots_;
+    int swap_write_idx_ = 0;
+    int swap_read_idx_ = 0;
+    std::mutex swap_mutex_;
+    std::condition_variable swap_cv_;
+
+    // Readback thread
+    std::thread readback_thread_;
+    std::atomic<bool> readback_running_{false};
+    std::function<void(int, const std::vector<FrameObservation>&)> readback_callback_;
 
     // Staging buffers for readback
     std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;

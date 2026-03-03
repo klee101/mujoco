@@ -26,6 +26,15 @@ bool initRenderContext(
     Device &dev = ctx.device;
     ctx.renderQueue = makeQueue(dev, dev.gfxQF, 0);
 
+    // Try to find independent transfer queue family
+    ctx.transferQF = dev.gfxQF;
+    if (dev.transferQF != VK_QUEUE_FAMILY_IGNORED && dev.transferQF != dev.gfxQF) {
+        ctx.transferQF = dev.transferQF;
+        ctx.transferQueue = makeQueue(dev, dev.transferQF, 0);
+    } else {
+        ctx.transferQueue = ctx.renderQueue;
+    }
+
     // Create main render pass (color + depth)
     {
         VkAttachmentDescription color_attachment{};
@@ -154,6 +163,38 @@ bool initRenderContext(
     // Create fence for loading operations
     ctx.load_fence_ = makeFence(dev, false);
 
+    // Create transfer queue resources
+    ctx.transfer_cmd_pool_ = makeCmdPool(dev, ctx.transferQF);
+    {
+        VkCommandBufferAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = ctx.transfer_cmd_pool_;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 1;
+        REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &alloc_info, &ctx.transfer_cmd_));
+    }
+    ctx.transfer_fence_ = makeFence(dev, false);
+    ctx.transfer_semaphore_ = makeBinarySemaphore(dev);
+
+    // Initialize command buffer ring
+    ctx.ring_cmd_pool_ = makeCmdPool(dev, dev.gfxQF);
+    {
+        VkCommandBufferAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = ctx.ring_cmd_pool_;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = CMD_RING_SIZE;
+
+        std::array<VkCommandBuffer, CMD_RING_SIZE> cmds;
+        REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &alloc_info, cmds.data()));
+
+        for (int i = 0; i < CMD_RING_SIZE; ++i) {
+            ctx.cmd_ring_[i].cmd = cmds[i];
+            ctx.cmd_ring_[i].fence = makeFence(dev, true);
+            ctx.cmd_ring_[i].ready = makeBinarySemaphore(dev);
+        }
+    }
+
     return true;
 }
 
@@ -193,6 +234,43 @@ void cleanupRenderContext(RenderContext &ctx)
     if (ctx.load_fence_ != VK_NULL_HANDLE) {
         dev.dt.destroyFence(dev.hdl, ctx.load_fence_, nullptr);
         ctx.load_fence_ = VK_NULL_HANDLE;
+    }
+
+    // Cleanup transfer queue resources
+    if (ctx.transfer_semaphore_ != VK_NULL_HANDLE) {
+        dev.dt.destroySemaphore(dev.hdl, ctx.transfer_semaphore_, nullptr);
+        ctx.transfer_semaphore_ = VK_NULL_HANDLE;
+    }
+
+    if (ctx.transfer_fence_ != VK_NULL_HANDLE) {
+        dev.dt.destroyFence(dev.hdl, ctx.transfer_fence_, nullptr);
+        ctx.transfer_fence_ = VK_NULL_HANDLE;
+    }
+
+    if (ctx.transfer_cmd_ != VK_NULL_HANDLE && ctx.transfer_cmd_pool_ != VK_NULL_HANDLE) {
+        dev.dt.freeCommandBuffers(dev.hdl, ctx.transfer_cmd_pool_, 1, &ctx.transfer_cmd_);
+        ctx.transfer_cmd_ = VK_NULL_HANDLE;
+    }
+
+    if (ctx.transfer_cmd_pool_ != VK_NULL_HANDLE) {
+        dev.dt.destroyCommandPool(dev.hdl, ctx.transfer_cmd_pool_, nullptr);
+        ctx.transfer_cmd_pool_ = VK_NULL_HANDLE;
+    }
+
+    // Cleanup command buffer ring
+    for (int i = 0; i < CMD_RING_SIZE; ++i) {
+        if (ctx.cmd_ring_[i].ready != VK_NULL_HANDLE) {
+            dev.dt.destroySemaphore(dev.hdl, ctx.cmd_ring_[i].ready, nullptr);
+            ctx.cmd_ring_[i].ready = VK_NULL_HANDLE;
+        }
+        if (ctx.cmd_ring_[i].fence != VK_NULL_HANDLE) {
+            dev.dt.destroyFence(dev.hdl, ctx.cmd_ring_[i].fence, nullptr);
+            ctx.cmd_ring_[i].fence = VK_NULL_HANDLE;
+        }
+    }
+    if (ctx.ring_cmd_pool_ != VK_NULL_HANDLE) {
+        dev.dt.destroyCommandPool(dev.hdl, ctx.ring_cmd_pool_, nullptr);
+        ctx.ring_cmd_pool_ = VK_NULL_HANDLE;
     }
 
     // MemoryAllocator will clean itself up via destructor

@@ -60,7 +60,7 @@ struct GPURunUtil {
 
 inline VkDeviceAddress getDevAddr(const Device &dev, VkBuffer buf);
 
-inline VkCommandPool makeCmdPool(const Device &dev, uint32_t qf_idx);
+inline VkCommandPool makeCmdPool(const Device &dev, uint32_t qf_idx, VkCommandPoolCreateFlags flags = {});
 
 inline VkCommandBuffer makeCmdBuffer(
     const Device &dev,

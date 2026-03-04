@@ -7,6 +7,7 @@
 #include "backend.h"
 #include "scene.h"
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <cstring>
 #include <cassert>
@@ -330,8 +331,6 @@ BatchRenderer& BatchRenderer::operator=(BatchRenderer&& other) noexcept {
         descriptor_sets_ = std::move(other.descriptor_sets_);
         vert_shader_module_ = other.vert_shader_module_;
         frag_shader_module_ = other.frag_shader_module_;
-        render_fence_ = std::move(other.render_fence_);
-        staging_buffers_ = std::move(other.staging_buffers_);
         global_vertex_buffer_ = std::move(other.global_vertex_buffer_);
         global_index_buffer_ = std::move(other.global_index_buffer_);
         global_mesh_cache_ = std::move(other.global_mesh_cache_);
@@ -1300,121 +1299,13 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
     return true;
 }
 
-/**  NOTE: now invalid for have not done adjust for shadow and framebuffer
-*/
+/** @deprecated Use RecordCommandBuffersFromMemory instead.
+ *  NOTE: now invalid for have not done adjust for shadow and framebuffer
+ */
+[[deprecated("Use RecordCommandBuffersFromMemory instead")]]
 bool BatchRenderer::RecordCommandBuffers(int count) {
-    Device &dev = *device_;
-    VkCommandBuffer cmd = command_buffer_;
-    
-    for (int i = 0; i < count; ++i) {
-        PerEnvResources &res = env_resources_[i];
-        
-        // --- 1. Begin Recording & Render Pass ---
-        // change: one time submit for better performance
-        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-        
-        VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        renderPassInfo.renderPass = render_context_->renderPass;
-        renderPassInfo.framebuffer = framebuffer_;
-        renderPassInfo.renderArea.extent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height};
-        
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-        clearValues[1].depthStencil = {1.0f, 0};
-        renderPassInfo.clearValueCount = clearValues.size();
-        renderPassInfo.pClearValues = clearValues.data();
-        
-        dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        
-        // --- 2. Bind Pipeline & Global State ---
-        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
-        
-        // Set dynamic state
-        VkViewport viewport = {0.0f, 0.0f, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
-        dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
-        VkRect2D scissor = {{0, 0}, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
-        dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
-
-        // Bind Descriptor Sets (Camera/Light + Textures)
-        std::vector<VkDescriptorSet> sets = { descriptor_sets_[i], global_texture_descriptor_set };
-        dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
-                                     0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-
-        // --- 3. Bind Global Geometry Buffers  ---
-        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE && global_index_buffer_->buffer != VK_NULL_HANDLE) {
-            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
-            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            // --- 4. Draw Loop ---
-            const auto& drawables = res.render_scene->GetDrawables();
-            
-            for (const auto& drawable : drawables) {
-                if (!drawable.visible) continue;
-
-                // [LOOKUP] Find geometry offsets in global cache
-                auto it = global_mesh_cache_.find(drawable.global_mesh_name);
-                if (it == global_mesh_cache_.end()) {
-                    LOG(config_, "Warning: Mesh not found in cache: " + drawable.global_mesh_name);
-                    continue;
-                }
-                const MeshEntry& entry = it->second;
-
-                // Setup Push Constants (Transform + Material + Texture)
-                PushConstants pushConstants{};
-                pushConstants.model = drawable.transform;
-                pushConstants.rgba = drawable.material.rgba;
-                pushConstants.specular = drawable.material.specular;
-                pushConstants.emission = drawable.material.emission;
-                pushConstants.shininess = drawable.material.shininess;
-                pushConstants.reflectance = drawable.material.reflectance;
-
-
-                // Texture Lookup Logic (Flat index + Cache lookup)
-                bool has_texture = (drawable.material.texture_id >= 0);
-
-                int current_model_tex_offset = 0;
-                if (i < texture_offsets_.size()) {
-                    current_model_tex_offset = texture_offsets_[i];
-                }
-                int global_tex_id = current_model_tex_offset + drawable.material.texture_id;
-
-                if (has_texture && global_tex_id < material_textures_.global_texture_lookup.size()) {
-                    const auto& tex_map = material_textures_.global_texture_lookup[global_tex_id];
-                    pushConstants.texture_type = tex_map.type;
-                    pushConstants.texture_index = tex_map.index_in_array;
-                } else {
-                    pushConstants.texture_type = -1;
-                    pushConstants.texture_index = -1;
-                }
-
-                dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
-                                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                      0, sizeof(PushConstants), &pushConstants);
-
-                // [DRAW] 使用 Global Buffer 的偏移量
-                // indexCount: entry.index_count
-                // instanceCount: 1
-                // firstIndex: entry.index_offset (全局索引缓冲中的起始位置)
-                // vertexOffset: entry.vertex_offset (全局顶点缓冲中的起始位置，会被加到索引值上)
-                // firstInstance: 0
-                vkCmdDrawIndexed(cmd, 
-                               entry.index_count, 
-                               1, 
-                               entry.index_offset, 
-                               entry.vertex_offset, 
-                               0);
-            }
-        }
-
-        dev.dt.cmdEndRenderPass(cmd);
-        REQ_VK(dev.dt.endCommandBuffer(cmd));
-    }
-    
-    return true;
+    LOG(config_, "RecordCommandBuffers() is deprecated. Use RecordCommandBuffersFromMemory() instead.");
+    return false;
 }
 
 RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light) {
@@ -1432,6 +1323,8 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
         }
     }
 
+    LOG(config_, "UpdateScenesFromMemory succeed");
+
     // Phase 2: Record with current swap slot's framebuffer
     {
         ScopedNvtxRange range("2. Record", C_RECORD);
@@ -1440,6 +1333,8 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
              return MakeError(RenderError::VULKAN_ERROR, "RecordCommandBuffers failed");
         }
     }
+
+    LOG(config_, "RecordCommandBuffersFromMemory succeed");
 
     // Phase 3: Submit and wait
     {
@@ -1450,12 +1345,16 @@ RenderResult BatchRenderer::RenderFromMemory(const uint8_t* shared_memory_ptr, i
         }
     }
 
+    LOG(config_, "SubmitAndWait succeed");
+
     // Phase 4: Async Readback (non-blocking)
     {
         ScopeTimer t(profiler_, "4.ReadbackAsync");
         ScopedNvtxRange range("4. ReadbackAsync", C_READ);
         SubmitReadbackAsync(current_swap, frame_counter_);
     }
+
+    LOG(config_, "SubmitReadback succeed");
 
     // Rotate write slot
     swap_write_idx_ = (swap_write_idx_ + 1) % SWAP_COUNT;
@@ -1472,20 +1371,28 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
 
     // We only update UBOs here (Camera & Light). 
     // Geometry is read directly in the Record phase.
+    LOG(config_, "1");
 
-    std::vector<VkBufferCopy> copy_regions; 
-    
+    /**
+     * FIXME: between 1 and 2 , here exist a fence problem that case the process hang permanently
+     */
+
+    std::vector<VkBufferCopy> copy_regions;
+
     // Use transfer queue for async UBO updates
-    VkCommandBuffer cmd = render_context_->transfer_cmd_;
-    
+    SwapSlot& wslot = swap_slots_[swap_write_idx_];
+    VkCommandBuffer cmd = wslot.transfer_cmd;
+
     // Wait for previous transfer to complete
-    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &render_context_->transfer_fence_, VK_TRUE, UINT64_MAX));
-    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &render_context_->transfer_fence_));
-    
-    REQ_VK(dev.dt.resetCommandPool(dev.hdl, render_context_->transfer_cmd_pool_, 0));
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &wslot.transfer_fence, VK_TRUE, UINT64_MAX));
+    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &wslot.transfer_fence));
+
+    REQ_VK(dev.dt.resetCommandBuffer(cmd, 0));
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+
+    LOG(config_, "2");
 
     for(int i = 0; i < config_.batch_size; ++i) {
         const EnvRenderSlot& slot = slots[i];
@@ -1569,16 +1476,19 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     }
 
     REQ_VK(dev.dt.endCommandBuffer(cmd));
+
+    LOG(config_, "3");
     
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &render_context_->transfer_semaphore_;
-    
+    submitInfo.pSignalSemaphores = &wslot.transfer_semaphore;
+
     // Submit to transfer queue, signal semaphore when done
-    REQ_VK(dev.dt.queueSubmit(render_context_->transferQueue, 1, &submitInfo, render_context_->transfer_fence_));
+    REQ_VK(dev.dt.queueSubmit(render_context_->transferQueue, 1, &submitInfo, wslot.transfer_fence));
     
+    LOG(config_, "4");
     // No longer wait idle - render queue will wait on semaphore
     
     return true;
@@ -1590,14 +1500,19 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
     const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(ptr);
     
     SwapSlot& wslot = swap_slots_[swap_write_idx_];
+
+    // Wait for GPU to finish previous use of this slot (3 frames ago), then reset fence
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &wslot.render_fence, VK_TRUE, UINT64_MAX));
+    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &wslot.render_fence));
+
     {
         std::unique_lock<std::mutex> lk(swap_mutex_);
         swap_cv_.wait(lk, [&] { return wslot.state == SwapSlot::State::FREE; });
         wslot.state = SwapSlot::State::RENDERING;
     }
 
-    REQ_VK(dev.dt.resetCommandPool(dev.hdl, command_pool_, 0));
-    VkCommandBuffer cmd = command_buffer_;
+    REQ_VK(dev.dt.resetCommandBuffer(wslot.render_cmd, 0));
+    VkCommandBuffer cmd = wslot.render_cmd;
         // --- 1. Begin Recording & Render Pass ---
     VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1965,9 +1880,8 @@ bool BatchRenderer::RecordCommandBuffersFromMemory(const uint8_t* ptr, int count
 bool BatchRenderer::SubmitAndWait() {
     Device &dev = *device_;
     VkQueue queue = render_context_->renderQueue;
-    const uint64_t TIMEOUT_NS = 10000000000ULL; // 10s timeout 
-    // --- 1. reset Fence ---
-    REQ_VK(dev.dt.resetFences(dev.hdl, 1, &render_fence_));
+    int slot_idx = swap_write_idx_;
+    SwapSlot& slot = swap_slots_[slot_idx];
 
     // --- 2. Wait for transfer semaphore (UBO updates must be complete) ---
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
@@ -1975,14 +1889,17 @@ bool BatchRenderer::SubmitAndWait() {
     // --- 3. prepare Batching submitinfo ---
     VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &render_context_->transfer_semaphore_;
+    submitInfo.pWaitSemaphores = &slot.transfer_semaphore;
     submitInfo.pWaitDstStageMask = &waitStage;
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &command_buffer_; 
+    submitInfo.pCommandBuffers = &slot.render_cmd;
+    // Signal render complete semaphore for readback to wait on
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &slot.render_complete_semaphore;
 
-    // --- 4. One Submit ---
-    VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, render_fence_);
-    
+    // --- 4. Submit (non-blocking: signal slot.render_fence, return immediately) ---
+    VkResult submitResult = dev.dt.queueSubmit(queue, 1, &submitInfo, slot.render_fence);
+
     if (submitResult != VK_SUCCESS) {
         char log_buf[256];
         snprintf(log_buf, sizeof(log_buf), "ERROR: Batch queueSubmit failed: %d", submitResult);
@@ -1990,168 +1907,16 @@ bool BatchRenderer::SubmitAndWait() {
         return false;
     }
 
-    // --- 4. One Wait ---
-    {
-        ScopedNvtxRange range("CPU_Wait_Fence", 0xFF800000); 
-        
-        VkResult waitResult = dev.dt.waitForFences(
-            dev.hdl,
-            1,
-            &render_fence_,
-            VK_TRUE, 
-            TIMEOUT_NS
-        );
-
-        if (waitResult != VK_SUCCESS) {
-            char log_buf[256];
-            snprintf(log_buf, sizeof(log_buf), "ERROR: Batch fence wait failed: %d", waitResult);
-            LOG(config_, log_buf);
-            return false;
-        }
-    }
-    
     return true;
 }
 
+/** @deprecated Use SubmitReadbackAsync with readback thread instead.
+ *  Readback results using legacy color_image_, which is now removed.
+ */
+[[deprecated("Use SubmitReadbackAsync instead")]]
 bool BatchRenderer::ReadbackResults() {
-    Device &dev = *device_;
-    VkCommandBuffer cmd = render_context_->load_cmd_;
-
-    size_t total_slots = config_.batch_size * SHM_NUM_CAMERAS;
-    
-    // --- 1. Begin Recording ---
-    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
-
-    // [NEW] Calculate Grid Layout for Readback
-    int cols = std::ceil(std::sqrt((float)total_slots));
-
-    // --- 2. Global Barrier: Color Atlas -> Transfer Src (ONCE) ---
-    {
-        VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = color_image_->image; // [CHANGE] Use Single Atlas Image
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-
-        dev.dt.cmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &barrier);
-   }
-
-    // --- 3. Loop Copy Regions ---
-    for (int i = 0; i < total_slots; ++i) {
-        // B. Copy Image -> Staging Buffer
-        // Calculate Offset in Atlas
-        int grid_x = i % cols;
-        int grid_y = i / cols;
-        int32_t offset_x = grid_x * config_.frame_width;
-        int32_t offset_y = grid_y * config_.frame_height;
-
-
-        // B. Copy Image -> Staging Buffer
-        VkBufferImageCopy region = {};
-        region.bufferOffset = 0;
-        region.bufferRowLength = 0;
-        region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel = 0;
-        region.imageSubresource.baseArrayLayer = 0;
-        region.imageSubresource.layerCount = 1;
-        region.imageOffset = {offset_x, offset_y, 0};
-        region.imageExtent = {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height, 1};
-
-        dev.dt.cmdCopyImageToBuffer(cmd, color_image_->image, // [CHANGE] Copy from Atlas
-                                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                staging_buffers_[i].buffer, 1, &region);
-    }
-
-    // --- 4. Global Barrier: Transfer Src -> Color Attachment (Restore Atlas) ---
-    {
-        VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = color_image_->image; // [CHANGE] Use Single Atlas Image
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-
-        dev.dt.cmdPipelineBarrier(cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &barrier);
-    }
-
-    // --- 3. End & Submit ---
-    REQ_VK(dev.dt.endCommandBuffer(cmd));
-
-    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-
-    resetFence(dev, render_context_->load_fence_);
-    REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &submitInfo, render_context_->load_fence_));
-
-    // --- 4. Wait for GPU  ---
-    {
-        ScopedNvtxRange range("GPU_Readback_Wait", 0xFF808080);
-        waitForFenceInfinitely(dev, render_context_->load_fence_);
-    }
-
-    // --- 5. Zero-Copy  ---
-    frames.resize(total_slots);
-
-    {
-        ScopedNvtxRange range("CPU_Invalidate_Cache", 0xFF4682B4);
-        
-        // prepare Invalidate Ranges
-        std::vector<VkMappedMemoryRange> ranges;
-        ranges.reserve(total_slots);
-
-        for (int i = 0; i < total_slots; ++i) {
-            VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
-            range.memory = staging_buffers_[i].getMemHdl(); 
-            range.offset = 0; 
-            range.size = VK_WHOLE_SIZE; 
-            ranges.push_back(range);
-        }
-
-        // B. Cache Invalidation
-        if (!ranges.empty()) {
-            REQ_VK(dev.dt.invalidateMappedMemoryRanges(dev.hdl, (uint32_t)ranges.size(), ranges.data()));
-        }
-
-        // directly point frame data to staging buffer memory
-        size_t pixel_size = 4; // RGBA8
-        uint32_t width = (uint32_t)config_.frame_width;
-        uint32_t height = (uint32_t)config_.frame_height;
-
-        for (int i = 0; i < total_slots; ++i) {
-            frames[i].data = (const uint8_t*)staging_buffers_[i].ptr;
-            frames[i].width = width;
-            frames[i].height = height;
-            frames[i].stride_bytes = width * pixel_size; 
-            frames[i].total_bytes = width * height * pixel_size;
-        }
-    }
-
-    return true;
+    LOG(config_, "ReadbackResults() is deprecated. Use SubmitReadbackAsync() instead.");
+    return false;
 }
 
 // --------------------------- Vulkan Resource Creation -----------------------
@@ -2464,6 +2229,17 @@ bool BatchRenderer::CreateFramebuffers() {
     std::array<VkCommandBuffer, SWAP_COUNT> rb_cmds;
     REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &alloc_info, rb_cmds.data()));
 
+    // Allocate per-slot transfer command buffers
+    std::array<VkCommandBuffer, SWAP_COUNT> transfer_cmds;
+    {
+        VkCommandBufferAllocateInfo ta{};
+        ta.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ta.commandPool = render_context_->transfer_cmd_pool_;
+        ta.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ta.commandBufferCount = SWAP_COUNT;
+        REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &ta, transfer_cmds.data()));
+    }
+
     for (int s = 0; s < SWAP_COUNT; ++s) {
         auto& slot = swap_slots_[s];
 
@@ -2518,6 +2294,11 @@ bool BatchRenderer::CreateFramebuffers() {
 
         slot.readback_cmd = rb_cmds[s];
         slot.readback_fence = makeFence(dev, true);
+        slot.render_complete_semaphore = makeBinarySemaphore(dev);
+        slot.transfer_cmd = transfer_cmds[s];
+        slot.transfer_fence = makeFence(dev, true);
+        slot.transfer_semaphore = makeBinarySemaphore(dev);
+        slot.render_fence = makeFence(dev, true);
         slot.state = SwapSlot::State::FREE;
     }
 
@@ -2532,21 +2313,23 @@ bool BatchRenderer::CreateBuffers() {
     
     VkCommandPoolCreateInfo poolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     poolInfo.queueFamilyIndex = dev.gfxQF;
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; 
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     REQ_VK(dev.dt.createCommandPool(dev.hdl, &poolInfo, nullptr, &command_pool_));
 
-    // 2. 分配单个 Command Buffer
-    // [MODIFIED] 只分配 1 个
-    VkCommandBufferAllocateInfo allocCmdInfo{};
-    allocCmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocCmdInfo.commandPool = command_pool_;
-    allocCmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocCmdInfo.commandBufferCount = 1; 
-
-    REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &allocCmdInfo, &command_buffer_));
+    // Allocate per-slot render command buffers
+    {
+        VkCommandBufferAllocateInfo allocCmdInfo{};
+        allocCmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocCmdInfo.commandPool = command_pool_;
+        allocCmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocCmdInfo.commandBufferCount = SWAP_COUNT;
+        std::array<VkCommandBuffer, SWAP_COUNT> render_cmds;
+        REQ_VK(dev.dt.allocateCommandBuffers(dev.hdl, &allocCmdInfo, render_cmds.data()));
+        for (int s = 0; s < SWAP_COUNT; ++s)
+            swap_slots_[s].render_cmd = render_cmds[s];
+    }
 
     // Create fences
-    render_fence_ = makeFence(dev, false);
     {
         // Create descriptor pool
         std::array<VkDescriptorPoolSize, 3> poolSizes{};
@@ -2726,17 +2509,6 @@ bool BatchRenderer::CreateBuffers() {
     // 5. update the texture
     if (!writes.empty()) {
         dev.dt.updateDescriptorSets(dev.hdl, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    }
-    
-    // Create staging buffers for readback
-    // BUGFIX: with the zero-copy logic, this staging buffer need to be changed
-    staging_buffers_.clear();
-    staging_buffers_.reserve(total_slots);
-    for (size_t i = 0; i < total_slots; ++i) {
-        size_t bufferSize = config_.frame_width * config_.frame_height * 4;
-        staging_buffers_.emplace_back(
-            render_context_->allocator.makeStagingBuffer2(bufferSize)
-        );
     }
     
     LOG(config_, "CreateBuffers(): buffers created");
@@ -3029,43 +2801,59 @@ void BatchRenderer::DestroyVulkanResources() {
         pipeline_layout_ = VK_NULL_HANDLE;
     }
 
-    // Destroy fences
-    if(render_fence_ != VK_NULL_HANDLE) {
-        dev.dt.destroyFence(dev.hdl, render_fence_, nullptr);
-        render_fence_ = VK_NULL_HANDLE;
+    // Destroy swap slots resources
+    for (int s = 0; s < SWAP_COUNT; ++s) {
+        SwapSlot& slot = swap_slots_[s];
+        
+        if (slot.framebuffer != VK_NULL_HANDLE) {
+            dev.dt.destroyFramebuffer(dev.hdl, slot.framebuffer, nullptr);
+            slot.framebuffer = VK_NULL_HANDLE;
+        }
+        
+        if (slot.color_view != VK_NULL_HANDLE) {
+            dev.dt.destroyImageView(dev.hdl, slot.color_view, nullptr);
+            slot.color_view = VK_NULL_HANDLE;
+        }
+        
+        if (slot.depth_view != VK_NULL_HANDLE) {
+            dev.dt.destroyImageView(dev.hdl, slot.depth_view, nullptr);
+            slot.depth_view = VK_NULL_HANDLE;
+        }
+        
+        if (slot.readback_fence != VK_NULL_HANDLE) {
+            dev.dt.destroyFence(dev.hdl, slot.readback_fence, nullptr);
+            slot.readback_fence = VK_NULL_HANDLE;
+        }
+        
+        if (slot.render_complete_semaphore != VK_NULL_HANDLE) {
+            dev.dt.destroySemaphore(dev.hdl, slot.render_complete_semaphore, nullptr);
+            slot.render_complete_semaphore = VK_NULL_HANDLE;
+        }
+
+        if (slot.transfer_semaphore != VK_NULL_HANDLE) {
+            dev.dt.destroySemaphore(dev.hdl, slot.transfer_semaphore, nullptr);
+            slot.transfer_semaphore = VK_NULL_HANDLE;
+        }
+
+        if (slot.transfer_fence != VK_NULL_HANDLE) {
+            dev.dt.destroyFence(dev.hdl, slot.transfer_fence, nullptr);
+            slot.transfer_fence = VK_NULL_HANDLE;
+        }
+
+        if (slot.render_fence != VK_NULL_HANDLE) {
+            dev.dt.destroyFence(dev.hdl, slot.render_fence, nullptr);
+            slot.render_fence = VK_NULL_HANDLE;
+        }
+
+        slot.staging_bufs.clear();
+        if (slot.color_image) slot.color_image.reset();
+        if (slot.depth_image) slot.depth_image.reset();
     }
-    
-    // Staging buffers are destroyed via HostBuffer destructors
-    staging_buffers_.clear();
 
     // Destroy shadow resources
     if (shadow_pipeline_ != VK_NULL_HANDLE) dev.dt.destroyPipeline(dev.hdl, shadow_pipeline_, nullptr);
     
     dev.dt.destroySampler(dev.hdl, shadow_sampler_, nullptr);
-
-    // [New] Clean up Main Render Pass Resources (Atlas)
-    if (framebuffer_ != VK_NULL_HANDLE) {
-        dev.dt.destroyFramebuffer(dev.hdl, framebuffer_, nullptr);
-        framebuffer_ = VK_NULL_HANDLE;
-    }
-
-    if (color_image_view_ != VK_NULL_HANDLE) {
-        dev.dt.destroyImageView(dev.hdl, color_image_view_, nullptr);
-        color_image_view_ = VK_NULL_HANDLE;
-    }
-    if (depth_image_view_ != VK_NULL_HANDLE) {
-        dev.dt.destroyImageView(dev.hdl, depth_image_view_, nullptr);
-        depth_image_view_ = VK_NULL_HANDLE;
-    }
-
-    // Clean up Main Images (std::optional)
-    if (color_image_.has_value()) {
-        color_image_.reset();
-    }
-
-    if (depth_image_.has_value()) {
-        depth_image_.reset();
-    }
 
     // [New] Clean up Shadow Pass Resources (Atlas)
     if (shadow_framebuffer_ != VK_NULL_HANDLE) {
@@ -3100,7 +2888,7 @@ bool BatchRenderer::SubmitNext() {
 
 bool BatchRenderer::WaitSlot(int slot_idx) {
     Device &dev = *device_;
-    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &render_fence_, VK_TRUE, UINT64_MAX));
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &swap_slots_[slot_idx].render_fence, VK_TRUE, UINT64_MAX));
     return true;
 }
 
@@ -3112,7 +2900,7 @@ bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
     REQ_VK(dev.dt.resetFences(dev.hdl, 1, &slot.readback_fence));
 
     VkCommandBuffer cmd = slot.readback_cmd;
-    REQ_VK(dev.dt.resetCommandPool(dev.hdl, render_context_->ring_cmd_pool_, 0));
+    REQ_VK(dev.dt.resetCommandBuffer(cmd, 0));
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -3158,7 +2946,11 @@ bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
     slot.step_id = step_id;
     slot.state = SwapSlot::State::READBACK_PENDING;
 
+    VkPipelineStageFlags waitStageReadback = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &slot.render_complete_semaphore;
+    si.pWaitDstStageMask = &waitStageReadback;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     REQ_VK(dev.dt.queueSubmit(render_context_->renderQueue, 1, &si, slot.readback_fence));

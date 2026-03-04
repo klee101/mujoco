@@ -6,19 +6,9 @@
 #include <vulkan/vulkan.h>
 #include <mutex>
 #include <condition_variable>
-#include <array>
 
 namespace mujoco{
 namespace mjbatch {
-
-constexpr int CMD_RING_SIZE = 4;
-
-struct CmdSlot {
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    VkSemaphore ready = VK_NULL_HANDLE;
-    bool pending = false;
-};
 
 struct RenderContext
 {
@@ -37,32 +27,21 @@ struct RenderContext
     VkFence load_fence_ = VK_NULL_HANDLE;
 
     VkCommandPool transfer_cmd_pool_ = VK_NULL_HANDLE;
-    VkCommandBuffer transfer_cmd_ = VK_NULL_HANDLE;
-    VkFence transfer_fence_ = VK_NULL_HANDLE;
-    VkSemaphore transfer_semaphore_ = VK_NULL_HANDLE;
     uint32_t transferQF = VK_QUEUE_FAMILY_IGNORED;
 
     VkCommandPool ring_cmd_pool_ = VK_NULL_HANDLE;
-    std::array<CmdSlot, CMD_RING_SIZE> cmd_ring_;
-    int ring_record_idx_ = 0;
-    int ring_submit_idx_ = 0;
-    std::mutex ring_mutex_;
-    std::condition_variable ring_cv_;
-    int ring_available_slots_ = CMD_RING_SIZE;
 
     uint32_t num_worlds_ = 0;
 
     uint32_t per_width_ = 0;
     uint32_t per_height_ = 0;
 
-    // Constructor - requires device and backend references
     RenderContext(Device &dev, Backend &be) 
         : device(dev), backend(be), allocator(dev,backend) {}
 
     
 };
 
-// Initialize RenderContext with basic Vulkan resources for batch rendering
 bool initRenderContext(
     RenderContext &ctx,
     Device &device,
@@ -71,7 +50,6 @@ bool initRenderContext(
     uint32_t per_width,
     uint32_t per_height);
 
-// Cleanup RenderContext resources
 void cleanupRenderContext(RenderContext &ctx);
 
 }} // namespace mujoco::mjbatch

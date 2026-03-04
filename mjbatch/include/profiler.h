@@ -9,6 +9,7 @@
 #include <string>
 #include <iostream>
 #include <functional>
+#include <iomanip>
 
 struct RenderProfiler
 {

@@ -304,6 +304,12 @@ struct SwapSlot {
     std::vector<mujoco::mjbatch::HostBuffer> staging_bufs;
     VkCommandBuffer readback_cmd = VK_NULL_HANDLE;
     VkFence readback_fence = VK_NULL_HANDLE;
+    VkSemaphore render_complete_semaphore = VK_NULL_HANDLE;
+    VkCommandBuffer render_cmd = VK_NULL_HANDLE;
+    VkFence render_fence = VK_NULL_HANDLE;
+    VkCommandBuffer transfer_cmd = VK_NULL_HANDLE;
+    VkFence transfer_fence = VK_NULL_HANDLE;
+    VkSemaphore transfer_semaphore = VK_NULL_HANDLE;
     enum class State { FREE, RENDERING, READBACK_PENDING, READY } state = State::FREE;
     int step_id = -1;
 };
@@ -336,8 +342,9 @@ public:
 
     /*
     * Render - core rendering function
-    * NOTE: now invalid when connected to Robosuite 
+    * @deprecated Use RenderFromMemory instead. This function uses legacy framebuffer path.
     */
+    [[deprecated("Use RenderFromMemory instead")]]
     RenderResult Render(mjData** data_array, const int* camera_ids = nullptr);
 
 
@@ -515,7 +522,6 @@ private:
     std::vector<PerEnvResources> env_resources_;
 
     // Vulkan resources
-    VkCommandBuffer command_buffer_;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
 
     VkPipeline graphics_pipeline_ = VK_NULL_HANDLE;
@@ -534,23 +540,12 @@ private:
     VkShaderModule vert_shader_module_ = VK_NULL_HANDLE;
     VkShaderModule frag_shader_module_ = VK_NULL_HANDLE;
 
-    // Framebuffers and images for batch rendering
-    // TODO: use the meta Framebuffer 
-    // TODO: fill the FrameBuffer with scenes * views (batch_size * 3) 
-
-    VkFramebuffer framebuffer_;
-    std::optional<mujoco::mjbatch::LocalImage> color_image_;
-    std::optional<mujoco::mjbatch::LocalImage> depth_image_;
-    VkImageView color_image_view_;
-    VkImageView depth_image_view_;
-
+    // Shadow framebuffer (single atlas for all environments)
     VkFramebuffer shadow_framebuffer_;
     std::optional<mujoco::mjbatch::LocalImage> shadow_image_;
     VkImageView shadow_image_view_;
 
     VkSampler shadow_sampler_;
-
-    VkFence render_fence_;
 
     // Triple buffer swap slots
     std::array<SwapSlot, SWAP_COUNT> swap_slots_;
@@ -563,9 +558,6 @@ private:
     std::thread readback_thread_;
     std::atomic<bool> readback_running_{false};
     std::function<void(int, const std::vector<FrameObservation>&)> readback_callback_;
-
-    // Staging buffers for readback
-    std::vector<mujoco::mjbatch::HostBuffer> staging_buffers_;
 
     std::optional<mujoco::mjbatch::LocalBuffer> global_vertex_buffer_;
     std::optional<mujoco::mjbatch::LocalBuffer> global_index_buffer_;

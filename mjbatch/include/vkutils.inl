@@ -79,11 +79,12 @@ VkDeviceAddress getDevAddr(const Device &dev, VkBuffer buf)
     return dev.dt.getBufferDeviceAddress(dev.hdl, &addr_info);
 }
 
-VkCommandPool makeCmdPool(const Device &dev, uint32_t qf_idx)
+VkCommandPool makeCmdPool(const Device &dev, uint32_t qf_idx, VkCommandPoolCreateFlags flags)
 {
     VkCommandPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.queueFamilyIndex = qf_idx;
+    pool_info.flags = flags;
 
     VkCommandPool pool;
     REQ_VK(dev.dt.createCommandPool(dev.hdl, &pool_info, nullptr, &pool));

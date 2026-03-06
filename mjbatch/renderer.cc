@@ -2900,6 +2900,29 @@ bool BatchRenderer::WaitSlot(int slot_idx) {
     return true;
 }
 
+bool BatchRenderer::WaitReadback(int slot_idx) {
+    Device &dev = *device_;
+    SwapSlot& slot = swap_slots_[slot_idx];
+
+    // 等 readback GPU cmd 完成
+    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, 
+        &slot.readback_fence, VK_TRUE, UINT64_MAX));
+    
+    // 等 ReadbackThreadFn 处理完（invalidate + callback + state=FREE）
+    std::unique_lock<std::mutex> lk(swap_mutex_);
+    swap_cv_.wait(lk, [&] {
+        return slot.state == SwapSlot::State::FREE;
+    });
+    return true;
+}
+
+void BatchRenderer::CopyFrameFromStaging(int slot_idx, int resource_idx,
+                                          uint8_t* dst, size_t size) {
+    SwapSlot& slot = swap_slots_[slot_idx];
+    // WaitReadback 已保证数据就绪，直接 memcpy
+    std::memcpy(dst, slot.staging_bufs[resource_idx].ptr, size);
+}
+
 bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
     Device &dev = *device_;
     SwapSlot& slot = swap_slots_[swap_idx];

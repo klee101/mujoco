@@ -66,20 +66,19 @@ class AsyncPipeline:
             self.thread.join(timeout=2.0)
 
     def _run(self):
-        # ↓ 关键修复：先 update+record+submit，再等上一帧，错开一帧
-        pending_slot = None  # 上一帧提交的 slot
+        pending_slot = None
 
         while self.running:
             try:
-                # 1. 提交当前帧（不等 GPU）
                 self.renderer.update_async(self.shm_ptr, self.max_geom, self.max_light)
                 current_slot = self.renderer.record_next(self.shm_ptr)
                 self.renderer.submit_next()
 
-                # 2. 等上一帧完成（此时 GPU 在跑当前帧，CPU 等上一帧）
+                # 等上一帧渲染完（不等 readback），GPU 同时跑当前帧
                 if pending_slot is not None:
                     self.renderer.wait_slot(pending_slot)
                     try:
+                        # 把 slot 传出去，消费者调用 get_image(slot,...) 时才等 readback
                         self.result_queue.put(pending_slot, timeout=0.1)
                     except queue.Full:
                         pass
@@ -90,7 +89,6 @@ class AsyncPipeline:
                 print(f"[AsyncPipeline] Error: {e}")
                 break
 
-        # 循环结束后等最后一帧
         if pending_slot is not None:
             try:
                 self.renderer.wait_slot(pending_slot)
@@ -255,6 +253,60 @@ def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_
     return avg_time, fps
 
 
+def test_render_and_save_images(renderer, shm_ptr, num_envs, num_frames=3,
+                                 output_dir="/tmp/mujoco_test_frames",
+                                 max_geom=1000, max_light=10):
+    os.makedirs(output_dir, exist_ok=True)
+    renderer.start_readback_thread()
+
+    saved_count = 0
+    pending = []  # list of (frame_idx, slot)
+
+    for frame_idx in range(num_frames):
+        print(f"[Test] Submitting frame {frame_idx+1}/{num_frames}...")
+        renderer.update_async(shm_ptr, max_geom, max_light)
+        slot = renderer.record_next(shm_ptr)
+        renderer.submit_next()
+
+        # wait_slot 只等渲染完，slot 可复用，GPU 继续跑下一帧
+        renderer.wait_slot(slot)
+        pending.append((frame_idx, slot))
+
+    # 所有帧提交完后，按顺序等 readback 并保存
+    # 此时 GPU 早已完成所有渲染，readback 也大概率已完成
+    for frame_idx, slot in pending:
+        print(f"[Test] Saving frame {frame_idx+1}/{num_frames} (slot={slot})...")
+        for env_idx in range(num_envs):
+            try:
+                # get_image 内部等 readback 完成
+                img = renderer.get_image(slot, env_idx, 0)
+
+                if img is None or img.size == 0:
+                    print(f"[Test]   env{env_idx}: get_image returned empty")
+                    continue
+
+                img_path = os.path.join(output_dir,
+                    f"frame{frame_idx:02d}_env{env_idx:02d}.png")
+
+                from PIL import Image
+                if img.shape[2] == 4:
+                    img_rgba = Image.fromarray(img)
+                    img_rgb = Image.new("RGB", img_rgba.size)
+                    img_rgb.paste(img_rgba, mask=img_rgba.split()[3])
+                    img_rgb.save(img_path)
+                else:
+                    Image.fromarray(img).save(img_path)
+
+                print(f"[Test]   env{env_idx}: saved {img_path} ({img.shape})")
+                saved_count += 1
+
+            except Exception as e:
+                print(f"[Test]   env{env_idx}: failed - {e}")
+
+    renderer.stop_readback_thread()
+    print(f"\n[Test] Saved {saved_count} images to {output_dir}")
+    return saved_count > 0
+
 def test_async_threaded_pipeline(renderer, shm_ptr, num_frames=5, max_geom=1000, max_light=10):
     """Test async pipeline with background thread"""
     print(f"\n{'='*60}")
@@ -291,6 +343,7 @@ def main():
     parser.add_argument("--width", type=int, default=640, help="Frame width")
     parser.add_argument("--height", type=int, default=480, help="Frame height")
     parser.add_argument("--iterations", type=int, default=5, help="Async pipeline iterations")
+    parser.add_argument("--output_dir", type=str, default="/tmp/mujoco_test_frames", help="Output directory for rendered images")
     args = parser.parse_args()
     
     print("="*60)
@@ -314,6 +367,10 @@ def main():
         renderer, shm, buf_addrs, kept_envs = test_basic_rendering(
             args.num_envs, args.width, args.height)
         results['basic'] = True
+        
+        # Test: Render and save images to verify rendering works
+        results['render_images'] = test_render_and_save_images(
+            renderer, buf_addrs[0], args.num_envs, num_frames=3, output_dir=args.output_dir)
         
         # Test 2: Async bindings
         results['async_bindings'] = test_async_bindings(

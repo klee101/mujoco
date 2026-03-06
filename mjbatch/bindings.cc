@@ -88,8 +88,13 @@ PYBIND11_MODULE(mjb, m) {
         // Phase 4: Wait for a specific slot's readback fence to complete
         // This is the CPU sync point; call with the slot returned by record_next()
         .def("wait_slot", &BatchRenderer::WaitSlot, py::arg("slot_idx"),
-             "Block until the readback for slot_idx is GPU-complete.\n"
-             "After this returns, get_image() is valid for that slot's frames.")
+            "Block until GPU rendering for slot_idx is complete (NOT readback).\n"
+            "After this returns, the slot can be reused for the next frame.\n"
+            "For pixel data, call wait_readback(slot_idx) or get_image(slot_idx, ...).")
+
+        .def("wait_readback", &BatchRenderer::WaitReadback, py::arg("slot_idx"),
+            "Block until readback (PCIe transfer) for slot_idx is complete.\n"
+            "Must be called before get_image() for the corresponding slot.")
 
         // ── Readback thread control ────────────────────────────────────────────
         // The readback thread watches for READBACK_PENDING slots and transitions
@@ -139,28 +144,23 @@ PYBIND11_MODULE(mjb, m) {
         // ── Image retrieval ────────────────────────────────────────────────────
         // get_image reads from the latest completed readback staging buffer.
         // Only valid after wait_slot() has returned for the corresponding slot.
-        .def("get_image", [](BatchRenderer& self, int batch_idx, int cam_idx) {
-            int total_cams = 3; // SHM_NUM_CAMERAS
-            int flat_idx = batch_idx * total_cams + cam_idx;
-
-            const uint8_t* ptr = self.GetRGBFrame(flat_idx);
-            if (!ptr) {
-                throw std::runtime_error(
-                    "Invalid batch index or uninitialized. "
-                    "Ensure wait_slot() has completed for this frame.");
-            }
+        .def("get_image", [](BatchRenderer& self, int slot_idx, int batch_idx, int cam_idx) {
+            // 等该 slot 的 readback 完成
+            self.WaitReadback(slot_idx);
 
             size_t h = self.GetConfig().frame_height;
             size_t w = self.GetConfig().frame_width;
+            int total_cams = 3; // SHM_NUM_CAMERAS
+            int resource_idx = batch_idx * total_cams + cam_idx;
 
-            // Copy into a new numpy array so lifetime is independent of renderer
             py::array_t<uint8_t> result({h, w, (size_t)4});
-            std::memcpy(result.mutable_data(), ptr, h * w * 4);
+            // 从 staging buffer 直接读（WaitReadback 已保证数据就绪）
+            self.CopyFrameFromStaging(slot_idx, resource_idx, result.mutable_data(), h * w * 4);
             return result;
-        }, py::arg("batch_idx"), py::arg("cam_idx"),
-           "Get rendered frame as HxWx4 numpy array (RGBA, uint8).\n"
-           "Only valid after wait_slot() has returned for the corresponding slot.\n"
-           "cam_idx: 0..2 (SHM_NUM_CAMERAS-1)")
+        }, py::arg("slot_idx"), py::arg("batch_idx"), py::arg("cam_idx"),
+        "Get rendered frame as HxWx4 numpy array (RGBA, uint8).\n"
+        "Internally calls wait_readback(slot_idx) to ensure data is ready.\n"
+        "slot_idx: returned by record_next(); batch_idx: env index; cam_idx: 0..2")
 
         // get_image_view: zero-copy view (unsafe: only valid until next render cycle)
         .def("get_image_view", [](BatchRenderer& self, int batch_idx, int cam_idx) {

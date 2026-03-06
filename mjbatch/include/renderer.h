@@ -359,6 +359,9 @@ public:
     int RecordNext(const uint8_t* shm_ptr);
     bool SubmitNext();
     bool WaitSlot(int slot_idx);
+    bool WaitReadback(int slot_idx);
+    void CopyFrameFromStaging(int slot_idx, int resource_idx,
+                            uint8_t* dst, size_t size);
 
     void SetReadbackCallback(std::function<void(int, const std::vector<FrameObservation>&)> cb) {
         readback_callback_ = std::move(cb);

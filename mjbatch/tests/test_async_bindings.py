@@ -46,52 +46,61 @@ def get_mujoco_address(model_obj):
 
 
 class AsyncPipeline:
-    """Simple async pipeline for testing"""
     def __init__(self, renderer, shm_ptr, max_geom, max_light):
         self.renderer = renderer
         self.shm_ptr = shm_ptr
         self.max_geom = max_geom
         self.max_light = max_light
         self.running = False
-        self.queue = queue.Queue(maxsize=2)
+        self.result_queue = queue.Queue(maxsize=2)
         self.thread = None
-    
+
     def start(self):
         self.running = True
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
-    
+
     def stop(self):
         self.running = False
         if self.thread:
             self.thread.join(timeout=2.0)
-    
+
     def _run(self):
+        # ↓ 关键修复：先 update+record+submit，再等上一帧，错开一帧
+        pending_slot = None  # 上一帧提交的 slot
+
         while self.running:
             try:
-                # Update async
+                # 1. 提交当前帧（不等 GPU）
                 self.renderer.update_async(self.shm_ptr, self.max_geom, self.max_light)
-                
-                # Record next
-                slot = self.renderer.record_next(self.shm_ptr)
-                
-                # Submit
+                current_slot = self.renderer.record_next(self.shm_ptr)
                 self.renderer.submit_next()
-                
-                # Wait for completion
-                self.renderer.wait_slot(slot)
-                
-                self.queue.put(slot, timeout=0.1)
-            except queue.Full:
-                pass
+
+                # 2. 等上一帧完成（此时 GPU 在跑当前帧，CPU 等上一帧）
+                if pending_slot is not None:
+                    self.renderer.wait_slot(pending_slot)
+                    try:
+                        self.result_queue.put(pending_slot, timeout=0.1)
+                    except queue.Full:
+                        pass
+
+                pending_slot = current_slot
+
             except Exception as e:
                 print(f"[AsyncPipeline] Error: {e}")
                 break
-    
+
+        # 循环结束后等最后一帧
+        if pending_slot is not None:
+            try:
+                self.renderer.wait_slot(pending_slot)
+                self.result_queue.put(pending_slot, timeout=0.5)
+            except Exception:
+                pass
+
     def get_result(self, timeout=1.0):
-        """Get completed slot (non-blocking check)"""
         try:
-            return self.queue.get_nowait()
+            return self.result_queue.get(timeout=timeout)
         except queue.Empty:
             return None
 
@@ -175,79 +184,74 @@ def test_basic_rendering(num_envs, width, height):
     return renderer, shm, buf_addrs, kept_envs
 
 
+# test_async_bindings 函数修改
 def test_async_bindings(renderer, shm_ptr, max_geom=1000, max_light=10):
-    """Test the new async binding interfaces"""
     print(f"\n{'='*60}")
     print("TEST 2: Async Bindings")
     print(f"{'='*60}")
     
-    # Test update_async
+    # ✅ 关键修复1: 启动 readback thread，否则 slot.state 永远不归 FREE
+    renderer.start_readback_thread()
+    
     print("[Test] Testing update_async()...")
     start = time.perf_counter()
     result = renderer.update_async(shm_ptr, max_geom, max_light)
     elapsed = time.perf_counter() - start
     print(f"[Test]   update_async() returned {result} in {elapsed*1000:.2f}ms")
     
-    # Test record_next
     print("[Test] Testing record_next()...")
     start = time.perf_counter()
     slot = renderer.record_next(shm_ptr)
     elapsed = time.perf_counter() - start
     print(f"[Test]   record_next() returned slot={slot} in {elapsed*1000:.2f}ms")
     
-    # Test submit_next
     print("[Test] Testing submit_next()...")
     start = time.perf_counter()
     result = renderer.submit_next()
     elapsed = time.perf_counter() - start
     print(f"[Test]   submit_next() returned {result} in {elapsed*1000:.2f}ms")
     
-    # Test wait_slot
     print("[Test] Testing wait_slot()...")
     start = time.perf_counter()
-    result = renderer.wait_slot(0)
+    # ✅ 关键修复2: 用 record_next 返回的实际 slot，不要硬编码 0
+    result = renderer.wait_slot(slot)
     elapsed = time.perf_counter() - start
-    print(f"[Test]   wait_slot(0) returned {result} in {elapsed*1000:.2f}ms")
+    print(f"[Test]   wait_slot({slot}) returned {result} in {elapsed*1000:.2f}ms")
     
+    renderer.stop_readback_thread()
     return True
 
 
+# test_async_pipeline 函数修改
 def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_light=10):
-    """Test the complete async pipeline"""
     print(f"\n{'='*60}")
     print(f"TEST 3: Async Pipeline ({num_iterations} iterations)")
     print(f"{'='*60}")
     
-    times = []
+    # ✅ 关键修复: 启动 readback thread
+    renderer.start_readback_thread()
     
+    times = []
     for i in range(num_iterations):
         print(f"[Test] Iteration {i+1}/{num_iterations}...")
-        
         start = time.perf_counter()
         
-        # Phase 1: Update async
         renderer.update_async(shm_ptr, max_geom, max_light)
-        
-        # Phase 2: Record next
-        slot = renderer.record_next(shm_ptr)
-        
-        # Phase 3: Submit next
+        slot = renderer.record_next(shm_ptr)   # ✅ 拿到真实 slot
         renderer.submit_next()
-        
-        # Phase 4: Wait slot
-        renderer.wait_slot(slot)
+        renderer.wait_slot(slot)               # ✅ 等真实 slot
         
         elapsed = time.perf_counter() - start
         times.append(elapsed)
-        print(f"[Test]   Iteration {i+1} completed in {elapsed*1000:.2f}ms")
+        print(f"[Test]   Iteration {i+1} completed in {elapsed*1000:.2f}ms, slot={slot}")
+    
+    renderer.stop_readback_thread()
     
     avg_time = sum(times) / len(times)
     fps = 1.0 / avg_time if avg_time > 0 else 0
-    
     print(f"\n[Test] Async Pipeline Results:")
     print(f"  Average time: {avg_time*1000:.2f}ms")
     print(f"  Estimated FPS: {fps:.2f}")
-    
     return avg_time, fps
 
 
@@ -256,6 +260,8 @@ def test_async_threaded_pipeline(renderer, shm_ptr, num_frames=5, max_geom=1000,
     print(f"\n{'='*60}")
     print(f"TEST 4: Async Threaded Pipeline ({num_frames} frames)")
     print(f"{'='*60}")
+    
+    renderer.start_readback_thread()
     
     pipeline = AsyncPipeline(renderer, shm_ptr, max_geom, max_light)
     pipeline.start()
@@ -273,6 +279,7 @@ def test_async_threaded_pipeline(renderer, shm_ptr, num_frames=5, max_geom=1000,
             print(f"[Test] Frame {completed} completed, slot={slot}")
     
     pipeline.stop()
+    renderer.stop_readback_thread()
     print(f"[Test] Completed {completed}/{num_frames} frames")
     
     return completed == num_frames

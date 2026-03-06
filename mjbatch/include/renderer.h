@@ -360,6 +360,13 @@ public:
     bool SubmitNext();
     bool WaitSlot(int slot_idx);
 
+    void SetReadbackCallback(std::function<void(int, const std::vector<FrameObservation>&)> cb) {
+        readback_callback_ = std::move(cb);
+    }
+
+    void StartReadbackThread();
+    void StopReadbackThread();
+
     /* GetRGBFrame - Get pointers to individual frames in the batch
     *  zero-copy readback: directly return pointer to mapped staging buffer
     *  NOTE: external interface to access per-frame image data
@@ -440,8 +447,6 @@ private:
     // Async readback methods
     bool SubmitReadbackAsync(int swap_idx, int step_id);
     void ReadbackThreadFn();
-    void StartReadbackThread();
-    void StopReadbackThread();
 
     // Vulkan resource management
     bool CreateVulkanInstance();

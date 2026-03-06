@@ -1371,7 +1371,6 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
 
     // We only update UBOs here (Camera & Light). 
     // Geometry is read directly in the Record phase.
-    LOG(config_, "1");
 
     /**
      * FIXME: between 1 and 2 , here exist a fence problem that case the process hang permanently
@@ -1392,7 +1391,6 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
 
-    LOG(config_, "2");
 
     for(int i = 0; i < config_.batch_size; ++i) {
         const EnvRenderSlot& slot = slots[i];
@@ -1476,8 +1474,6 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
     }
 
     REQ_VK(dev.dt.endCommandBuffer(cmd));
-
-    LOG(config_, "3");
     
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
@@ -1487,8 +1483,7 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int start_idx, in
 
     // Submit to transfer queue, signal semaphore when done
     REQ_VK(dev.dt.queueSubmit(render_context_->transferQueue, 1, &submitInfo, wslot.transfer_fence));
-    
-    LOG(config_, "4");
+
     // No longer wait idle - render queue will wait on semaphore
     
     return true;
@@ -2879,11 +2874,24 @@ bool BatchRenderer::UpdateAsync(const uint8_t* shm_ptr, int max_geom, int max_li
 }
 
 int BatchRenderer::RecordNext(const uint8_t* shm_ptr) {
-    return 0;
+    if (!RecordCommandBuffersFromMemory(shm_ptr, config_.batch_size)) {
+        return -1;
+    }
+    return swap_write_idx_;
 }
 
 bool BatchRenderer::SubmitNext() {
-    return SubmitAndWait();
+    if (!SubmitAndWait()) {
+        return false;
+    }
+
+    int slot_idx = swap_write_idx_;
+    SubmitReadbackAsync(slot_idx, frame_counter_);
+
+    swap_write_idx_ = (swap_write_idx_ + 1) % SWAP_COUNT;
+    frame_counter_++;
+
+    return true;
 }
 
 bool BatchRenderer::WaitSlot(int slot_idx) {

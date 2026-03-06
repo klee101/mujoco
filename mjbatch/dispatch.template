@@ -31,6 +31,7 @@ device:
 - vkFlushMappedMemoryRanges
 - vkInvalidateMappedMemoryRanges
 - vkAllocateCommandBuffers
+- vkResetCommandBuffer
 - vkFreeCommandBuffers
 - vkBeginCommandBuffer
 - vkEndCommandBuffer
@@ -107,7 +108,6 @@ device:
 - vkCmdBeginRenderingKHR
 - vkCmdEndRenderingKHR
 - vkCmdWriteTimestamp
-
 instance:
 - vkEnumeratePhysicalDevices
 - vkEnumerateDeviceExtensionProperties

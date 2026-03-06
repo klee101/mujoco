@@ -104,81 +104,96 @@ class AsyncPipeline:
 
 
 def test_basic_rendering(num_envs, width, height):
-    """Test basic synchronous rendering with valid models"""
     print(f"\n{'='*60}")
     print("TEST 1: Basic Synchronous Rendering")
     print(f"{'='*60}")
     print(f"Config: {num_envs} envs, {width}x{height}")
-    
-    # Create valid model pointers using Robosuite
-    print("[Test] Creating Robosuite environments to get valid model pointers...")
-    model_ptrs = []
-    kept_envs = []
-    
-    for i in range(num_envs):
-        dummy = robosuite.make(
-            env_name='TwoArmLift', robots=['UR5e','UR5e'],
-            has_renderer=False, has_offscreen_renderer=False, use_camera_obs=False)
-        kept_envs.append(dummy)
-        ptr = get_mujoco_address(dummy.sim.model)
-        model_ptrs.append(ptr)
-    
-    print(f"[Test] Got {len(model_ptrs)} valid model pointers")
-    
-    # Create renderer
-    cfg = mjb.BatchRendererConfig()
-    cfg.batch_size = num_envs
-    cfg.frame_width = width
-    cfg.frame_height = height
-    cfg.gpu_id = 0
-    cfg.enable_validation = False  # Disable validation for testing
-    
-    print("[Test] Creating BatchRenderer...")
-    renderer = mjb.BatchRenderer(model_ptrs, cfg)
-    print("[Test] BatchRenderer created successfully!")
-    
-    # Create shared memory for rendering
+
     MAX_GEOMS = 1000
     MAX_LIGHTS = 10
     NUM_BUFFERS = 3
-    
     SHM_NAME = "test_async_shm"
+
+    # --- 创建 shm ---
     try:
         old_shm = shared_memory.SharedMemory(name=SHM_NAME)
         old_shm.close()
         old_shm.unlink()
     except:
         pass
-    
+
     packet_dtype = get_render_packet_dtype(MAX_GEOMS, MAX_LIGHTS)
     packet_size = packet_dtype.itemsize
     total_shm_size = NUM_BUFFERS * num_envs * packet_size
-    
     shm = shared_memory.SharedMemory(create=True, size=total_shm_size, name=SHM_NAME)
-    
+
     buf_addrs = []
     for buf_idx in range(NUM_BUFFERS):
         offset = buf_idx * num_envs * packet_size
         buf_arr = np.ndarray((num_envs, packet_dtype.itemsize),
-                            dtype=np.uint8, buffer=shm.buf, offset=offset)
+                             dtype=np.uint8, buffer=shm.buf, offset=offset)
         buf_addrs.append(buf_arr.ctypes.data)
-    
-    # Run basic render test
+
+    # --- 创建真实的 robosuite 环境（带 shm 写入能力）---
+    print("[Test] Creating Robosuite environments with shm support...")
+    model_ptrs = []
+    kept_envs = []
+
+    for i in range(num_envs):
+        env = robosuite.make(
+            env_name='TwoArmLift',
+            robots=['UR5e', 'UR5e'],
+            camera_names=['frontview', 'robot0_eye_in_hand', 'robot1_eye_in_hand'],
+            camera_heights=height,
+            camera_widths=width,
+            has_offscreen_renderer=True,
+            ignore_done=True,
+            use_camera_obs=False,
+            shared_memory_name=SHM_NAME,
+            env_index=i,
+            num_buffers=NUM_BUFFERS,
+            total_envs=num_envs,
+            max_geoms=MAX_GEOMS,
+        )
+        env.reset()
+        kept_envs.append(env)
+        ptr = get_mujoco_address(env.sim.model)
+        model_ptrs.append(ptr)
+
+    print(f"[Test] Got {len(model_ptrs)} valid model pointers")
+
+    # --- 执行一步物理，把场景数据写入 buf[0] ---
+    print("[Test] Stepping envs to populate shm buffer 0...")
+    for i, env in enumerate(kept_envs):
+        env.sim._render_context_offscreen.set_buffer_id(0)
+        low, high = env.action_spec
+        action = np.random.uniform(low, high)
+        env.step(action)
+
+    # 验证数据已写入
+    buf0 = np.ndarray((num_envs,), dtype=packet_dtype, buffer=shm.buf, offset=0)
+    for i in range(num_envs):
+        print(f"[Test]   env{i}: num_geoms={buf0[i]['num_geoms']}, num_lights={buf0[i]['num_lights']}")
+
+    # --- 创建 BatchRenderer ---
+    cfg = mjb.BatchRendererConfig()
+    cfg.batch_size = num_envs
+    cfg.frame_width = width
+    cfg.frame_height = height
+    cfg.gpu_id = 0
+    cfg.enable_validation = False
+
+    print("[Test] Creating BatchRenderer...")
+    renderer = mjb.BatchRenderer(model_ptrs, cfg)
+    print("[Test] BatchRenderer created successfully!")
+
+    # --- 基础渲染测试 ---
     print("[Test] Running render_from_shm...")
     start = time.perf_counter()
     result = renderer.render_from_shm(buf_addrs[0], 0, MAX_GEOMS, MAX_LIGHTS)
     elapsed = time.perf_counter() - start
-    
     print(f"[Test] render_from_shm completed in {elapsed*1000:.2f}ms, result={result}")
-    
-    # Test get_image
-    print("[Test] Testing get_image...")
-    try:
-        img = renderer.get_image(0, 0)
-        print(f"[Test]   get_image(0,0): shape={img.shape}, size={img.nbytes} bytes")
-    except Exception as e:
-        print(f"[Test]   get_image failed: {e}")
-    
+
     return renderer, shm, buf_addrs, kept_envs
 
 
@@ -253,7 +268,8 @@ def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_
     return avg_time, fps
 
 
-def test_render_and_save_images(renderer, shm_ptr, num_envs, num_frames=3,
+def test_render_and_save_images(renderer, shm_ptr, num_envs, kept_envs,
+                                 num_frames=3,
                                  output_dir="/tmp/mujoco_test_frames",
                                  max_geom=1000, max_light=10):
     os.makedirs(output_dir, exist_ok=True)
@@ -264,21 +280,23 @@ def test_render_and_save_images(renderer, shm_ptr, num_envs, num_frames=3,
 
     for frame_idx in range(num_frames):
         print(f"[Test] Submitting frame {frame_idx+1}/{num_frames}...")
+
+        # 每帧 step 所有 env，写入 buf[0]（测试固定用 buf 0）
+        for env in kept_envs:
+            env.sim._render_context_offscreen.set_buffer_id(0)
+            low, high = env.action_spec
+            env.step(np.random.uniform(low, high))
+
         renderer.update_async(shm_ptr, max_geom, max_light)
         slot = renderer.record_next(shm_ptr)
         renderer.submit_next()
-
-        # wait_slot 只等渲染完，slot 可复用，GPU 继续跑下一帧
         renderer.wait_slot(slot)
         pending.append((frame_idx, slot))
 
-    # 所有帧提交完后，按顺序等 readback 并保存
-    # 此时 GPU 早已完成所有渲染，readback 也大概率已完成
     for frame_idx, slot in pending:
         print(f"[Test] Saving frame {frame_idx+1}/{num_frames} (slot={slot})...")
         for env_idx in range(num_envs):
             try:
-                # get_image 内部等 readback 完成
                 img = renderer.get_image(slot, env_idx, 0)
 
                 if img is None or img.size == 0:
@@ -370,7 +388,8 @@ def main():
         
         # Test: Render and save images to verify rendering works
         results['render_images'] = test_render_and_save_images(
-            renderer, buf_addrs[0], args.num_envs, num_frames=3, output_dir=args.output_dir)
+            renderer, buf_addrs[0], args.num_envs, kept_envs,
+            num_frames=3, output_dir=args.output_dir)
         
         # Test 2: Async bindings
         results['async_bindings'] = test_async_bindings(

@@ -2919,8 +2919,26 @@ bool BatchRenderer::WaitReadback(int slot_idx) {
 void BatchRenderer::CopyFrameFromStaging(int slot_idx, int resource_idx,
                                           uint8_t* dst, size_t size) {
     SwapSlot& slot = swap_slots_[slot_idx];
-    // WaitReadback 已保证数据就绪，直接 memcpy
-    std::memcpy(dst, slot.staging_bufs[resource_idx].ptr, size);
+    
+    // 检查1: staging buffer 指针是否有效
+    if (!slot.staging_bufs[resource_idx].ptr) {
+        printf("[CopyFrame] ERROR: staging buf ptr is null, slot=%d res=%d\n",
+               slot_idx, resource_idx);
+        return;
+    }
+    
+    const uint8_t* src = (const uint8_t*)slot.staging_bufs[resource_idx].ptr;
+    
+    // 检查2: 前16个像素是否全0
+    bool all_zero = true;
+    for (int i = 0; i < 64; i++) {
+        if (src[i] != 0) { all_zero = false; break; }
+    }
+    printf("[CopyFrame] slot=%d res=%d all_zero=%d first_bytes=[%d,%d,%d,%d]\n",
+           slot_idx, resource_idx, all_zero,
+           src[0], src[1], src[2], src[3]);
+    
+    std::memcpy(dst, src, size);
 }
 
 bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {

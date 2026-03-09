@@ -1878,6 +1878,12 @@ bool BatchRenderer::SubmitAndWait() {
     int slot_idx = swap_write_idx_;
     SwapSlot& slot = swap_slots_[slot_idx];
 
+    {
+        std::lock_guard<std::mutex> lk(swap_mutex_);
+        slot.step_id = frame_counter_;
+        slot.readback_submitted = false;
+    }
+
     // --- 2. Wait for transfer semaphore (UBO updates must be complete) ---
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
@@ -2880,18 +2886,374 @@ int BatchRenderer::RecordNext(const uint8_t* shm_ptr) {
     return swap_write_idx_;
 }
 
+// 新增：只录制，不等 fence（由调用方保证 slot 已 free）
+int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr) {
+
+    int count = config_.batch_size;
+    Device &dev = *device_;
+
+    const EnvRenderSlot* slots = reinterpret_cast<const EnvRenderSlot*>(shm_ptr);
+    SwapSlot& wslot = swap_slots_[swap_write_idx_];
+
+    // ★ 移除这里的 waitForFences！
+    // 改为：直接检查 state，如果不是 FREE 则返回 -1（非阻塞）
+    {
+        std::unique_lock<std::mutex> lk(swap_mutex_);
+        if (wslot.state != SwapSlot::State::FREE) {
+            return -1;  // slot 还没好，让 Python 侧重试或先做别的
+        }
+
+        VkResult resetRes = dev.dt.resetFences(dev.hdl, 1, &wslot.render_fence);
+        if (resetRes != VK_SUCCESS) {
+            return -1;
+        }
+        wslot.state = SwapSlot::State::RENDERING;
+    }
+
+    REQ_VK(dev.dt.resetCommandBuffer(wslot.render_cmd, 0));
+    VkCommandBuffer cmd = wslot.render_cmd;
+        // --- 1. Begin Recording & Render Pass ---
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    REQ_VK(dev.dt.beginCommandBuffer(cmd, &beginInfo));
+
+    // =========================================================================
+    // STEP A: SHADOW PASS (Single Atlas Pass)
+    // =========================================================================
+    {
+        ScopeTimer t(profiler_, "2. Record_CommandBuffers.ShadowPass");
+        // 1. Calculate Shadow Atlas Layout
+        // Must match logic in CreateShadowResources
+        int shadow_cols = std::ceil(std::sqrt((float)config_.batch_size));
+        int shadow_rows = std::ceil((float)config_.batch_size / shadow_cols);
+        uint32_t atlas_w = shadow_cols * SHADOW_MAP_DIM;
+        uint32_t atlas_h = shadow_rows * SHADOW_MAP_DIM;
+
+        VkRenderPassBeginInfo shadowPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+        shadowPassInfo.renderPass = render_context_->shadowPass;
+        shadowPassInfo.framebuffer = shadow_framebuffer_; // [CHANGE] Single Atlas FB
+        shadowPassInfo.renderArea.extent = {atlas_w, atlas_h};
+
+        VkClearValue clearDepth = {.depthStencil = {1.0f, 0}};
+        shadowPassInfo.clearValueCount = 1;
+        shadowPassInfo.pClearValues = &clearDepth;
+
+        // Start Pass ONCE
+        dev.dt.cmdBeginRenderPass(cmd, &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_);
+
+        // Bind Global Vertex Buffers ONCE
+        if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
+            VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+            vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+            // Loop over environments inside the pass
+            for (int i = 0; i < count; ++i) {
+                const EnvRenderSlot& slot = slots[i];
+
+                // Calculate Viewport Offset
+                int grid_x = i % shadow_cols;
+                int grid_y = i / shadow_cols;
+                float vp_x = grid_x * (float)SHADOW_MAP_DIM;
+                float vp_y = grid_y * (float)SHADOW_MAP_DIM;
+
+                VkViewport vp = {vp_x, vp_y, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.0f, 1.0f};
+                dev.dt.cmdSetViewport(cmd, 0, 1, &vp);
+                VkRect2D sc = {{ (int32_t)vp_x, (int32_t)vp_y }, {SHADOW_MAP_DIM, SHADOW_MAP_DIM}};
+                dev.dt.cmdSetScissor(cmd, 0, 1, &sc);
+
+                // Draw Geoms for this shadow map
+                int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+                glm::mat4 lightViewProj = cached_shadow_matrices_[i];
+
+                for (int g = 0; g < active_geoms; ++g) {
+                    const ShmGeom& geom = slot.geoms[g];
+                    glm::mat4 model_mat = ComputeModelMatrix(geom);
+
+                    PushConstantsShadow pc_shadow{};
+                    pc_shadow.mvp = lightViewProj * model_mat; 
+
+                    dev.dt.cmdPushConstants(cmd, pipeline_layout_, 
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstantsShadow), &pc_shadow);
+
+                    auto it = global_mesh_cache_.find(GetMeshName(geom, models_[i]));
+                    if (it != global_mesh_cache_.end()) {
+                        vkCmdDrawIndexed(cmd, it->second.index_count, 1, it->second.index_offset, it->second.vertex_offset, 0);
+                    }
+                }
+            }
+        }
+        dev.dt.cmdEndRenderPass(cmd);
+    }
+
+        // STEP B: BARRIER (Wait for Shadow Map Write to Finish)
+        {
+            VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // Or Undefined if using LOAD_OP_CLEAR and not caring
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampler
+            barrier.image = shadow_image_->image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.layerCount = 1;
+
+            dev.dt.cmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+
+        // =========================================================================
+        // STEP C: MAIN RENDER PASS (Single Atlas Pass)
+        // =========================================================================
+        {
+            ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass");
+            // 1. Calculate Main Atlas Layout
+            int total_views = config_.batch_size * SHM_NUM_CAMERAS;
+            int main_cols = std::ceil(std::sqrt((float)total_views));
+            int main_rows = std::ceil((float)total_views / main_cols);
+            uint32_t atlas_w = main_cols * config_.frame_width;
+            uint32_t atlas_h = main_rows * config_.frame_height;
+        
+            VkRenderPassBeginInfo renderPassInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+            renderPassInfo.renderPass = render_context_->renderPass;
+            renderPassInfo.framebuffer = wslot.framebuffer;
+            renderPassInfo.renderArea.extent = {atlas_w, atlas_h};
+            
+            std::array<VkClearValue, 2> clearValues{};
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
+            clearValues[1].depthStencil = {1.0f, 0};
+            renderPassInfo.clearValueCount = clearValues.size();
+            renderPassInfo.pClearValues = clearValues.data();
+            
+            {
+                ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BeginRenderPass");
+                dev.dt.cmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            }
+            // --- 2. Bind Pipeline & Global State ---
+            {
+                ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BindPipeline");
+                dev.dt.cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_);
+            }
+            // Bind Vertices ONCE
+            if (global_vertex_buffer_->buffer != VK_NULL_HANDLE) {
+                {
+                    ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.BindVertexIndex");
+                    VkBuffer vbs[] = { global_vertex_buffer_->buffer };
+                    VkDeviceSize offsets[] = { 0 };
+                    vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offsets);
+                    vkCmdBindIndexBuffer(cmd, global_index_buffer_->buffer, 0, VK_INDEX_TYPE_UINT32);
+                }
+                // Loop Envs
+                for (int i = 0; i < count; ++i) {
+                    ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops");
+                    const EnvRenderSlot& slot = slots[i];
+
+                    // Loop Cameras
+                    for (int c = 0; c < SHM_NUM_CAMERAS; ++c) {
+                        int resource_idx = i * SHM_NUM_CAMERAS + c;
+
+                        // Calculate Viewport Offset for this Camera
+                        int grid_x = resource_idx % main_cols;
+                        int grid_y = resource_idx / main_cols;
+                        float vp_x = grid_x * (float)config_.frame_width;
+                        float vp_y = grid_y * (float)config_.frame_height;
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.SetView");
+                            VkViewport viewport = {vp_x, vp_y, (float)config_.frame_width, (float)config_.frame_height, 0.0f, 1.0f};
+                            dev.dt.cmdSetViewport(cmd, 0, 1, &viewport);
+                            VkRect2D scissor = {{ (int32_t)vp_x, (int32_t)vp_y }, {(uint32_t)config_.frame_width, (uint32_t)config_.frame_height}};
+                            dev.dt.cmdSetScissor(cmd, 0, 1, &scissor);
+                        }
+                        // Re-bind Descriptor Sets for this camera (UBOs are per-camera/slot)
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.BindDescriptor");
+                            std::vector<VkDescriptorSet> sets = { descriptor_sets_[resource_idx], global_texture_descriptor_set };
+                            dev.dt.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 
+                                                    0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+                        }
+                        // Draw Geometry (with Culling)
+                        // const auto& cull_info = camera_cull_info_[resource_idx];
+                        int32_t active_geoms = std::min(slot.num_geoms, (int32_t)SHM_MAX_GEOMS);
+
+                        for (int g = 0; g < active_geoms; ++g)
+                        {
+                            //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops");
+                            //profiler_.total_geoms++;
+
+                            const ShmGeom& geom = slot.geoms[g];
+
+                            // --------------------------------------------------
+                            // Mesh Name + Mesh Cache Lookup
+                            // --------------------------------------------------
+                            std::string mesh_name;
+                            const MeshEntry* entry = nullptr;
+
+                            {
+                               ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.MeshLookup");
+
+                                mesh_name = GetMeshName(geom, models_[i]);
+                                auto it = global_mesh_cache_.find(mesh_name);
+                                if (it == global_mesh_cache_.end())
+                                    continue;
+
+                                entry = &it->second;
+                            }
+
+                            // --------------------------------------------------
+                            // Compute Model Matrix
+                            // --------------------------------------------------
+                            glm::mat4 model_mat;
+
+                            {
+                                //ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.ComputeModelMatrix");
+                                model_mat = ComputeModelMatrix(geom);
+                            }
+
+                            // --------------------------------------------------
+                            // Texture Resolve
+                            // --------------------------------------------------
+                            int texture_type = -1;
+                            int texture_index = -1;
+
+                            {
+                                ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.TextureResolve");
+
+                                int resolved_tex_id = -1;
+                                if (geom.matid >= 0)
+                                    resolved_tex_id = ResolveTextureFromMaterial(models_[i], geom.matid);
+
+                                if (resolved_tex_id >= 0 && i < texture_offsets_.size())
+                                {
+                                    int global_tex_id = texture_offsets_[i] + resolved_tex_id;
+
+                                    if (global_tex_id < material_textures_.global_texture_lookup.size())
+                                    {
+                                        const auto& tex_map =
+                                            material_textures_.global_texture_lookup[global_tex_id];
+
+                                        texture_type =
+                                            tex_map.index_in_array >= 0 ? tex_map.type : -1;
+
+                                        texture_index = tex_map.index_in_array;
+                                    }
+                                }
+                            }
+
+                            // --------------------------------------------------
+                            // Push Constants + Draw
+                            // --------------------------------------------------
+                            {
+                                ////ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass.Envloops.Gloops.DrawRecord");
+
+                                int shadow_cols =
+                                    std::ceil(std::sqrt((float)config_.batch_size));
+
+                                int shadow_row_idx = i / shadow_cols;
+                                int shadow_col_idx = i % shadow_cols;
+
+                                float shadow_scale = 1.0f / (float)shadow_cols;
+                                float shadow_offset_x = shadow_col_idx * shadow_scale;
+                                float shadow_offset_y = shadow_row_idx * shadow_scale;
+
+                                PushConstants pc{};
+                                pc.model = model_mat;
+                                pc.rgba = glm::vec4(
+                                    geom.rgba[0],
+                                    geom.rgba[1],
+                                    geom.rgba[2],
+                                    geom.rgba[3]);
+
+                                pc.specular = geom.specular;
+                                pc.emission = geom.emission;
+                                pc.shininess = geom.shininess;
+                                pc.reflectance = geom.reflectance;
+                                pc.shadow_atlas_params =
+                                    glm::vec4(shadow_offset_x, shadow_offset_y, shadow_scale, 0.0f);
+
+                                pc.texture_type = texture_type;
+                                pc.texture_index = texture_index;
+
+                                dev.dt.cmdPushConstants(
+                                    cmd,
+                                    pipeline_layout_,
+                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    0,
+                                    sizeof(PushConstants),
+                                    &pc);
+
+                                vkCmdDrawIndexed(
+                                    cmd,
+                                    entry->index_count,
+                                    1,
+                                    entry->index_offset,
+                                    entry->vertex_offset,
+                                    0);
+                            }
+                        }
+                    }
+                }
+            }
+            dev.dt.cmdEndRenderPass(cmd);
+        }
+    REQ_VK(dev.dt.endCommandBuffer(cmd));
+    
+    return true;
+}
+
+// 新增：非阻塞查询 slot 是否完成
+bool BatchRenderer::IsSlotReady(int slot_idx) {
+    Device &dev = *device_;
+    VkResult r = dev.dt.getFenceStatus(dev.hdl, 
+                     swap_slots_[slot_idx].render_fence);
+    return r == VK_SUCCESS;
+}
+
+
 bool BatchRenderer::SubmitNext() {
     if (!SubmitAndWait()) {
         return false;
     }
 
     int slot_idx = swap_write_idx_;
-    SubmitReadbackAsync(slot_idx, frame_counter_);
+    // 不再在 SubmitNext 里提交 readback。
+    // readback 由 Python 侧在合适时机显式调用 submit_readback(slot_idx)，
+    // 或由 readback 线程在 render_fence 完成后自动触发。
+    {
+        std::lock_guard<std::mutex> lk(swap_mutex_);
+        swap_slots_[slot_idx].readback_submitted = false;
+    }
 
     swap_write_idx_ = (swap_write_idx_ + 1) % SWAP_COUNT;
     frame_counter_++;
 
     return true;
+}
+
+bool BatchRenderer::SubmitReadbackForSlot(int slot_idx) {
+    Device &dev = *device_;
+    SwapSlot& slot = swap_slots_[slot_idx];
+
+    {
+        std::lock_guard<std::mutex> lk(swap_mutex_);
+        if (slot.readback_submitted) return true;   // 幂等保护
+        slot.readback_submitted = true;
+    }
+
+    // 等待 GPU render 完成（render_fence），再提交 readback blit
+    // 这里用 timeout=0 做非阻塞检测；如果 GPU 还没完成，直接 return false，
+    // 让调用方稍后重试（Python 侧在 is_slot_ready() 确认后才调用此函数）
+    VkResult fenceState = dev.dt.getFenceStatus(dev.hdl, slot.render_fence);
+    if (fenceState != VK_SUCCESS) {
+        std::lock_guard<std::mutex> lk(swap_mutex_);
+        slot.readback_submitted = false;   // 回退，允许重试
+        return false;
+    }
+
+    return SubmitReadbackAsync(slot_idx, slot.step_id);
 }
 
 bool BatchRenderer::WaitSlot(int slot_idx) {
@@ -2945,7 +3307,6 @@ bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
     Device &dev = *device_;
     SwapSlot& slot = swap_slots_[swap_idx];
 
-    REQ_VK(dev.dt.waitForFences(dev.hdl, 1, &slot.readback_fence, VK_TRUE, UINT64_MAX));
     REQ_VK(dev.dt.resetFences(dev.hdl, 1, &slot.readback_fence));
 
     VkCommandBuffer cmd = slot.readback_cmd;
@@ -3011,10 +3372,31 @@ void BatchRenderer::ReadbackThreadFn() {
     while (readback_running_) {
         for (int s = 0; s < SWAP_COUNT; ++s) {
             SwapSlot& slot = swap_slots_[s];
+            
+            
+            // ★ 新增：自动触发 readback blit（若 render_fence 完成但 readback 未提交）
+            if (slot.state == SwapSlot::State::RENDERING) {
+                VkResult r = device_->dt.getFenceStatus(
+                    device_->hdl, slot.render_fence);
+                if (r == VK_SUCCESS) {
+                    bool already = false;
+                    {
+                        std::lock_guard<std::mutex> lk(swap_mutex_);
+                        already = slot.readback_submitted;
+                        if (!already) slot.readback_submitted = true; // 提前标记，防重入
+          
+                    }
+                    if (!already) {
+                        SubmitReadbackAsync(s, slot.step_id);
+                        // SubmitReadbackAsync 内部会把 state 改为 READBACK_PENDING
+                    }
+                }
+                continue;
+            }
+
             if (slot.state != SwapSlot::State::READBACK_PENDING) continue;
 
-            VkResult r = device_->dt.waitForFences(device_->hdl, 1,
-                &slot.readback_fence, VK_TRUE, 1000000);
+            VkResult r = device_->dt.getFenceStatus(device_->hdl, slot.readback_fence);
             if (r != VK_SUCCESS) continue;
 
             int total_views = config_.batch_size * SHM_NUM_CAMERAS;
@@ -3046,6 +3428,7 @@ void BatchRenderer::ReadbackThreadFn() {
             {
                 std::lock_guard<std::mutex> lk(swap_mutex_);
                 slot.state = SwapSlot::State::FREE;
+                slot.readback_submitted = false;
             }
             swap_cv_.notify_all();
         }

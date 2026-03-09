@@ -66,6 +66,8 @@ cmake -S .. \
     -DGLFW_BUILD_X11=OFF \
     -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops" \
     -DPython3_EXECUTABLE=$(which python) \
+    -DCMAKE_C_COMPILER=gcc-11 \
+    -DCMAKE_CXX_COMPILER=g++-11
 
 // if need debug
 cmake ..     -DPython3_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug

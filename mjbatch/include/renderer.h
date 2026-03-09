@@ -312,6 +312,8 @@ struct SwapSlot {
     VkSemaphore transfer_semaphore = VK_NULL_HANDLE;
     enum class State { FREE, RENDERING, READBACK_PENDING, READY } state = State::FREE;
     int step_id = -1;
+
+    bool readback_submitted = false;
 };
 
 struct EnvMapResources {
@@ -357,7 +359,14 @@ public:
     // Fine-grained async interfaces
     bool UpdateAsync(const uint8_t* shm_ptr, int max_geom, int max_light);
     int RecordNext(const uint8_t* shm_ptr);
+
+    int RecordNextNoWait(const uint8_t* shm_ptr);
+    bool IsSlotReady(int slot_idx);
+
     bool SubmitNext();
+
+    bool SubmitReadbackForSlot(int slot_idx);
+    
     bool WaitSlot(int slot_idx);
     bool WaitReadback(int slot_idx);
     void CopyFrameFromStaging(int slot_idx, int resource_idx,

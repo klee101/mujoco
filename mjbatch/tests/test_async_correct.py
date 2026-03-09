@@ -16,7 +16,7 @@ import argparse
 import multiprocessing
 from multiprocessing import shared_memory, Value, Condition, Array
 
-BUILD_LIB_PATH = "/home/hpf/project/vulkan/mujoco/mujoco/build/lib"
+BUILD_LIB_PATH = "/home/hpf/projects/mujoco/mujoco/build/lib"
 if os.path.exists(BUILD_LIB_PATH):
     sys.path.append(BUILD_LIB_PATH)
 
@@ -241,7 +241,6 @@ def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_
     print(f"TEST 3: Async Pipeline ({num_iterations} iterations)")
     print(f"{'='*60}")
     
-    # ✅ 关键修复: 启动 readback thread
     renderer.start_readback_thread()
     
     times = []
@@ -250,9 +249,9 @@ def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_
         start = time.perf_counter()
         
         renderer.update_async(shm_ptr, max_geom, max_light)
-        slot = renderer.record_next(shm_ptr)   # ✅ 拿到真实 slot
+        slot = renderer.record_next(shm_ptr)   
         renderer.submit_next()
-        renderer.wait_slot(slot)               # ✅ 等真实 slot
+        renderer.wait_slot(slot)               
         
         elapsed = time.perf_counter() - start
         times.append(elapsed)
@@ -270,7 +269,7 @@ def test_async_pipeline(renderer, shm_ptr, num_iterations=5, max_geom=1000, max_
 
 def test_render_and_save_images(renderer, shm_ptr, num_envs, kept_envs,
                                  num_frames=3,
-                                 output_dir="/tmp/mujoco_test_frames",
+                                 output_dir="/home/hpf/projects/mujoco/mujoco/mjbatch/tests/mujoco_test_frames",
                                  max_geom=1000, max_light=10):
     os.makedirs(output_dir, exist_ok=True)
     renderer.start_readback_thread()
@@ -361,7 +360,7 @@ def main():
     parser.add_argument("--width", type=int, default=640, help="Frame width")
     parser.add_argument("--height", type=int, default=480, help="Frame height")
     parser.add_argument("--iterations", type=int, default=5, help="Async pipeline iterations")
-    parser.add_argument("--output_dir", type=str, default="/tmp/mujoco_test_frames", help="Output directory for rendered images")
+    parser.add_argument("--output_dir", type=str, default="/home/hpf/projects/mujoco/mujoco/mjbatch/tests/mujoco_test_frames", help="Output directory for rendered images")
     args = parser.parse_args()
     
     print("="*60)

@@ -46,3 +46,5 @@ MUJOCO_LOG.TXT
 wasm/**/dist/
 **/node_modules/
 
+mjbatch/tests/results_async_*
+mjbatch/tests/mujoco_test_frames/

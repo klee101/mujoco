@@ -79,6 +79,12 @@ PYBIND11_MODULE(mjb, m) {
            "Record draw commands for the current swap slot.\n"
            "Returns slot_idx (int) to be passed to wait_slot(), or -1 on error.")
 
+        .def("record_next_nowait", [](BatchRenderer& self, uintptr_t address) {
+            return self.RecordNextNoWait(reinterpret_cast<const uint8_t*>(address));
+        }, py::arg("shm_ptr"),
+           "Record draw commands for the current swap slot, with no waiting for the last render\n"
+           "Returns slot_idx (int) to be passed to wait_slot(), or -1 on error.")
+
         // Phase 3: Submit recorded commands to GPU + kick off async readback
         .def("submit_next", &BatchRenderer::SubmitNext,
              "Submit the recorded command buffer to the GPU render queue.\n"
@@ -92,9 +98,21 @@ PYBIND11_MODULE(mjb, m) {
             "After this returns, the slot can be reused for the next frame.\n"
             "For pixel data, call wait_readback(slot_idx) or get_image(slot_idx, ...).")
 
+        .def("is_slot_ready", &BatchRenderer::IsSlotReady, py::arg("slot_idx"),
+            "Non-blocking check whether GPU rendering for slot_idx is complete.\n"
+            "Returns True if done, False if still in flight.\n"
+            "Use this instead of wait_slot() in a pipelined loop to avoid blocking.")
+
         .def("wait_readback", &BatchRenderer::WaitReadback, py::arg("slot_idx"),
             "Block until readback (PCIe transfer) for slot_idx is complete.\n"
             "Must be called before get_image() for the corresponding slot.")
+
+        .def("submit_readback", &BatchRenderer::SubmitReadbackForSlot,
+            py::arg("slot_idx"),
+            "Explicitly submit readback blit for slot_idx after GPU render completes.\n"
+            "Usually not needed: the readback thread triggers this automatically.\n"
+            "Returns True if submitted, False if GPU render not yet complete (retry later).")
+
 
         // ── Readback thread control ────────────────────────────────────────────
         // The readback thread watches for READBACK_PENDING slots and transitions

@@ -58,38 +58,21 @@ PYBIND11_MODULE(mjb, m) {
                 reinterpret_cast<uint8_t*>(address),
                 batch_idx, max_geom, max_light).IsSuccess();
         }, py::arg("shm_ptr"), py::arg("batch_idx"),
-           py::arg("max_geom"), py::arg("max_light"))
+        py::arg("max_geom"), py::arg("max_light"))
 
         // ── Async pipeline interfaces ──────────────────────────────────────────
 
-        // Phase 1: Upload UBOs via transfer queue (non-blocking, signals transfer_semaphore)
-        .def("update_async", [](BatchRenderer& self, uintptr_t address,
-                                 int max_geom, int max_light) {
-            return self.UpdateAsync(
-                reinterpret_cast<uint8_t*>(address), max_geom, max_light);
+        .def("record_next_nowait", [](BatchRenderer& self, uintptr_t address, 
+                                int max_geom, int max_light) {
+            return self.RecordNextNoWait(
+                reinterpret_cast<const uint8_t*>(address), max_geom, max_light);
         }, py::arg("shm_ptr"), py::arg("max_geom"), py::arg("max_light"),
-           "Upload camera/light UBOs asynchronously via transfer queue.\n"
-           "Returns True on success. Must be called before record_next().")
+        "Record + upload UBO for next frame. Returns slot_idx or -1 if no slot free.")
 
-        // Phase 2: Record draw commands into current swap slot
-        // Returns the slot index that was recorded (pass to wait_slot later)
-        .def("record_next", [](BatchRenderer& self, uintptr_t address) {
-            return self.RecordNext(reinterpret_cast<const uint8_t*>(address));
-        }, py::arg("shm_ptr"),
-           "Record draw commands for the current swap slot.\n"
-           "Returns slot_idx (int) to be passed to wait_slot(), or -1 on error.")
-
-        .def("record_next_nowait", [](BatchRenderer& self, uintptr_t address) {
-            return self.RecordNextNoWait(reinterpret_cast<const uint8_t*>(address));
-        }, py::arg("shm_ptr"),
-           "Record draw commands for the current swap slot, with no waiting for the last render\n"
-           "Returns slot_idx (int) to be passed to wait_slot(), or -1 on error.")
-
-        // Phase 3: Submit recorded commands to GPU + kick off async readback
-        .def("submit_next", &BatchRenderer::SubmitNext,
-             "Submit the recorded command buffer to the GPU render queue.\n"
-             "Also submits the readback blit for the current slot.\n"
-             "Returns True on success.")
+        .def("submit_next", [](BatchRenderer& self, int slot_idx) {
+            return self.SubmitNext(slot_idx);
+        }, py::arg("slot_idx"),
+        "Submit recorded commands for slot_idx to GPU.")
 
         // Phase 4: Wait for a specific slot's readback fence to complete
         // This is the CPU sync point; call with the slot returned by record_next()
@@ -125,8 +108,9 @@ PYBIND11_MODULE(mjb, m) {
              "The thread transitions slot state READBACK_PENDING -> FREE after GPU readback.")
 
         .def("stop_readback_thread", &BatchRenderer::StopReadbackThread,
-             "Stop the background readback thread.\n"
-             "Call this before destroying the renderer or at end of test.")
+            py::call_guard<py::gil_scoped_release>(),
+            "Stop the background readback thread.\n"
+            "Call this before destroying the renderer or at end of test.")
 
         // ── Set readback callback (optional) ──────────────────────────────────
         // Callback signature: fn(step_id: int, frames: list[np.ndarray])

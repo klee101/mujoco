@@ -356,14 +356,10 @@ public:
     */
     RenderResult RenderFromMemory(const uint8_t* shared_memory_ptr, int batch_idx, int max_geom, int max_light);
 
-    // Fine-grained async interfaces
-    bool UpdateAsync(const uint8_t* shm_ptr, int max_geom, int max_light);
-    int RecordNext(const uint8_t* shm_ptr);
-
-    int RecordNextNoWait(const uint8_t* shm_ptr);
+    int RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int max_light);
     bool IsSlotReady(int slot_idx);
 
-    bool SubmitNext();
+    bool SubmitNext(int slot_idx);
 
     bool SubmitReadbackForSlot(int slot_idx);
     
@@ -434,20 +430,20 @@ private:
     * shared memory: (3 * camera + ngeoms + geoms[ngeoms]) * batch_size 
     * TODO: now use default lighting, may need to extend to support light UBOs later
     */
-    bool UpdateScenesFromMemory(const uint8_t* ptr, int batch_idx, int max_geom, int max_light);
+    bool UpdateScenesFromMemory(const uint8_t* ptr, int slot_idx, int batch_idx, int max_geom, int max_light);
 
     /*
     * RecordCommandBuffersFromMemory - Record command buffers directly from geoms in shared memory created by Robosuite
     * NOTE: used to connect with Robosuite
     * TODO: use a meta FrameBuffer to store the images 
     */
-    bool RecordCommandBuffersFromMemory(const uint8_t* ptr, int count);
+    bool RecordCommandBuffersFromMemory(const uint8_t* ptr, int count, int slot_idx);
 
     /*
     * SubmitAndWait - Submit all command buffers and wait for completion
     * NOTE: shared logic for all render
     */
-    bool SubmitAndWait();
+    bool SubmitAndWait(int slot_idx);
 
     /*
     * ReadbackResults - Read back rendered images to CPU
@@ -566,7 +562,6 @@ private:
 
     // Triple buffer swap slots
     std::array<SwapSlot, SWAP_COUNT> swap_slots_;
-    int swap_write_idx_ = 0;
     int swap_read_idx_ = 0;
     std::mutex swap_mutex_;
     std::condition_variable swap_cv_;

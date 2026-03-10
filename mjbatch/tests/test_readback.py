@@ -1,13 +1,12 @@
 """
 Async Pipeline Architecture Benchmark
 ======================================
-对应新架构（update_async / record_next_nowait / submit_next / is_slot_ready）的性能测试。
+对应新架构（record_next_nowait / submit_next / is_slot_ready）的性能测试。
 
 新架构并行结构：
   Main Thread
   ├─ [Physics Dispatch]     通过 buffer_cond 通知 Workers 写 shm
-  ├─ [update_async()]       从 shm 读取场景数据，上传至 GPU（transfer queue，非阻塞）
-  ├─ [record_next_nowait()] 录制 GPU 命令并分配渲染 slot（不阻塞等前帧 fence）
+  ├─ [record_next_nowait()] 从 shm 读取场景数据，上传至 GPU（transfer queue，非阻塞）,录制 GPU 命令并分配渲染 slot（不阻塞等前帧 fence）
   ├─ [submit_next()]        提交 GPU 任务（非阻塞）
   └─ [is_slot_ready()]      非阻塞轮询 GPU 渲染完成
 
@@ -105,10 +104,6 @@ except ImportError:
 
         def set_readback_callback(self, cb):
             self._cb = cb
-
-        def update_async(self, *a):
-            time.sleep(0.0008)   # 模拟 UBO 上传 ~0.8ms
-            return True
 
         def record_next_nowait(self, *a):
             with self._lock:
@@ -346,7 +341,6 @@ def plot_async_timeline(csv_file, output_image="async_timeline.png",
 
     # ── 颜色方案 ──────────────────────────────────────────────
     STAGE_COLORS = {
-        "update_async"  : "#4FC3F7",   # 浅蓝
         "record_next"   : "#81C784",   # 绿
         "submit_next"   : "#FFB74D",   # 橙
         "wait_slot"     : "#E57373",   # 红（✓ 确认时刻点）
@@ -549,7 +543,6 @@ def plot_async_timeline(csv_file, output_image="async_timeline.png",
     # ── 图例 ──────────────────────────────────────────────────
     patches = []
     label_map = {
-        "Main_CPU:update_async"   : "update_async (CPU)",
         "Main_CPU:record_next"    : "record_next (CPU)",
         "Main_CPU:submit_next"    : "submit_next (CPU)",
         "Main_CPU:wait_slot"      : "GPU ready ✓ (CPU poll)",
@@ -631,9 +624,9 @@ def plot_pipeline_diagram(output_image="pipeline_diagram.png"):
 
     for ax, stages, lane_labels, title in [
         (axes[0], stages_old, lane_labels_old,
-         "旧架构：同步渲染 — Physics → GPU → Readback 全串行"),
+         "Old: Serial Pipeline — Physics -> GPU -> Readback"),
         (axes[1], stages_new, lane_labels_new,
-         "新架构：三轨流水线 — CPU录制 ‖ GPU渲染 ‖ Readback DMA 真正并行"),
+         "New: 3-Track Pipeline — CPU Record || GPU Render || Readback DMA"),
     ]:
         ax.set_facecolor("#16213E")
         for (lane, xs, w, lbl, clr) in stages:
@@ -678,7 +671,6 @@ def plot_pipeline_diagram(output_image="pipeline_diagram.png"):
     # 共享图例
     legend_items = [
         mpatches.Patch(color="#2ecc71", label="Physics (Workers)"),
-        mpatches.Patch(color="#4FC3F7", label="update_async"),
         mpatches.Patch(color="#81C784", label="record_next"),
         mpatches.Patch(color="#FFB74D", label="submit_next"),
         mpatches.Patch(color="#CE93D8", alpha=0.7, label="GPU Render"),
@@ -862,8 +854,9 @@ def main():
     #     → 已 record、待 submit 的帧
     # ─────────────────────────────────────────────────────────
     prof_start = None
-    rendered   = -1
+    rendered   = 0
     dispatched = 0
+    recorded   = 0
 
     step_latencies = []   # GPU render 完成延迟（submit → is_slot_ready）
 
@@ -881,14 +874,15 @@ def main():
     slot_submit_times = {}   # {slot_idx: (submit_t, step_id)}
 
     try:
-        while rendered < TOTAL_STEPS:
+        while rendered < TOTAL_STEPS or cur_slot >= 0 or pending_slot >= 0:
             did_work = False
 
             # ── 阶段 A：提交已录制的帧 ──────────────────────────
             if cur_slot >= 0 and pending_slot < 0:
+                print(f"[Loop] Phase A: submitting cur_slot={cur_slot} rendered={rendered}/{TOTAL_STEPS}", flush=True)
                 t0 = time.perf_counter()
                 with NvtxAnnotate("submit_next", color="orange"):
-                    renderer.submit_next()
+                    renderer.submit_next(cur_slot)
                 t1 = time.perf_counter()
 
                 if cur_step > COLD_START:
@@ -908,7 +902,9 @@ def main():
                 did_work = True
 
             # ── 阶段 B：录制下一帧（与 GPU 渲染并行）────────────
-            if cur_slot < 0:
+            if cur_slot < 0 and recorded < TOTAL_STEPS:
+                print(f"[Loop] Phase B: trying to record, dispatched={dispatched}", flush=True)
+       
                 read_buf = -1
                 for bi in range(NUM_BUFFERS):
                     if buffer_state[bi] == BUF_READY:
@@ -917,26 +913,18 @@ def main():
                         break
 
                 if read_buf != -1:
-                    this_step = rendered + (2 if pending_slot >= 0 else 1)
+                    this_step = recorded + 1
                     frame_t0  = time.perf_counter()
-
-                    t0 = time.perf_counter()
-                    with NvtxAnnotate("update_async", color="cyan"):
-                        renderer.update_async(buf_addrs[read_buf], MAX_GEOMS, MAX_LIGHTS)
-                    t1 = time.perf_counter()
-                    if dispatched > COLD_START:
-                        logger.log("Main_CPU", "update_async",
-                                   t0, t1, this_step, read_buf)
 
                     slot = -1
                     t0_rec = time.perf_counter()
                     while slot < 0:
-                        with NvtxAnnotate("record_next_nowait", color="green"):
-                            slot = renderer.record_next_nowait(buf_addrs[read_buf])
+                        slot = renderer.record_next_nowait(buf_addrs[read_buf], MAX_GEOMS, MAX_LIGHTS)
                         if slot < 0:
                             time.sleep(0.00005)
                     t1_rec = time.perf_counter()
-                    if dispatched > COLD_START:
+
+                    if recorded > COLD_START:
                         logger.log("Main_CPU", "record_next",
                                    t0_rec, t1_rec, this_step, read_buf, slot)
 
@@ -944,10 +932,13 @@ def main():
                     cur_read_buf = read_buf
                     cur_step     = this_step
                     cur_frame_t0 = frame_t0
+                    recorded    += 1
                     did_work = True
 
             # ── 阶段 C：非阻塞轮询 GPU 完成，立即释放 buffer ──────
             if pending_slot >= 0:
+                print(f"[Loop] Phase C: polling pending_slot={pending_slot} rendered={rendered}", flush=True)
+        
                 if renderer.is_slot_ready(pending_slot):
                     gpu_done_t = time.perf_counter()
 
@@ -1000,19 +991,29 @@ def main():
 
             if not did_work:
                 time.sleep(0.00005)
+            print(f"[Debug] buffer_state={list(buffer_state)}", flush=True)
+            print(f"[Loop] END: rendered={rendered}/{TOTAL_STEPS} cur_slot={cur_slot} pending_slot={pending_slot} dispatched={dispatched}", flush=True)
+            
 
     finally:
-        # 安全退出：等待 pending GPU 工作完成；readback 通过线程异步处理
-        if pending_slot >= 0:
-            renderer.wait_slot(pending_slot)
-        # 等所有 readback 完成后再停线程
-        renderer.stop_readback_thread()
+        print("[Finally] Step 1: setting stop_flag", flush=True)
         stop_flag.value = 1
         with buffer_cond:
             buffer_cond.notify_all()
+        
+        print("[Finally] Step 2: terminating workers", flush=True)
         for p in workers:
             p.terminate()
             p.join()
+        
+        print("[Finally] Step 3: wait_slot", flush=True)
+        if pending_slot >= 0:
+            renderer.wait_slot(pending_slot)
+        
+        print("[Finally] Step 4: stop_readback_thread", flush=True)
+        renderer.stop_readback_thread()
+        
+        print("[Finally] Step 5: done", flush=True)
 
         # 将 readback 事件写入日志（用于三轨可视化）
         # readback_blit: 从 GPU render 完成到 callback 触发的时间窗

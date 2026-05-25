@@ -54,6 +54,10 @@ std::filesystem::path getAssetsDir() {
     else DefaultLog(msg); \
 } while(0)
 
+#define DEBUG_LOG(cfg, fmt, ...) do { \
+    if ((cfg).debug_logging) std::fprintf(stderr, fmt, ##__VA_ARGS__); \
+} while(0)
+
 static RenderResult MakeError(RenderError e, const std::string &msg, int idx = -1) {
     RenderResult r;
     r.error = e;
@@ -1256,15 +1260,15 @@ bool BatchRenderer::UpdateScenes(mjData** data_array, int count) {
         copy_ops.push_back({light_staging_buffers_[i].buffer, 
                            light_uniform_buffers_[i].buffer, 
                            sizeof(LightUBO)});
-        printf("Env %d: Updated %zu lights\n", i, light_count);
+        DEBUG_LOG(config_, "Env %d: Updated %zu lights\n", i, light_count);
         // print the detailed light info
         for (size_t j = 0; j < light_count; ++j) {
             const LightInfo& light = lights[j];
-            printf("  Light %zu: pos=(%.2f, %.2f, %.2f), diffuse=(%.2f, %.2f, %.2f), intensity=%.2f\n",
-                   j,
-                   light.position[0], light.position[1], light.position[2],
-                   light.diffuse[0], light.diffuse[1], light.diffuse[2],
-                   light.intensity);
+            DEBUG_LOG(config_, "  Light %zu: pos=(%.2f, %.2f, %.2f), diffuse=(%.2f, %.2f, %.2f), intensity=%.2f\n",
+                      j,
+                      light.position[0], light.position[1], light.position[2],
+                      light.diffuse[0], light.diffuse[1], light.diffuse[2],
+                      light.intensity);
         }
 
     }
@@ -1377,10 +1381,10 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int slot_idx, int
     SwapSlot& wslot = swap_slots_[slot_idx];
     VkCommandBuffer cmd = wslot.transfer_cmd;
 
-    fprintf(stderr, "[UpdateAsync] ENTER slot_idx,=%d slot.state=%d step_id=%d\n",
-            slot_idx, (int)wslot.state, wslot.step_id);
+    DEBUG_LOG(config_, "[UpdateAsync] ENTER slot_idx,=%d slot.state=%d step_id=%d\n",
+              slot_idx, (int)wslot.state, wslot.step_id);
 
-    fprintf(stderr, "[UpdateAsync] Waiting for transfer_fence slot=%d ...\n", slot_idx);
+    DEBUG_LOG(config_, "[UpdateAsync] Waiting for transfer_fence slot=%d ...\n", slot_idx);
     auto t0 = std::chrono::steady_clock::now();
 
     // Wait for previous transfer to complete
@@ -1390,12 +1394,12 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int slot_idx, int
     double wait_ms = std::chrono::duration<double,std::milli>(t1-t0).count();
     
     // ★ LOG: fence等待结果
-    fprintf(stderr, "[UpdateAsync] transfer_fence done slot=%d result=%d waited=%.2fms\n",
-            slot_idx, wait_res, wait_ms);
+    DEBUG_LOG(config_, "[UpdateAsync] transfer_fence done slot=%d result=%d waited=%.2fms\n",
+              slot_idx, wait_res, wait_ms);
     
     REQ_VK(dev.dt.resetFences(dev.hdl, 1, &wslot.transfer_fence));
 
-    fprintf(stderr, "[UpdateAsync] transfer_fence reset slot=%d\n", slot_idx);
+    DEBUG_LOG(config_, "[UpdateAsync] transfer_fence reset slot=%d\n", slot_idx);
 
 
     REQ_VK(dev.dt.resetCommandBuffer(cmd, 0));
@@ -1487,8 +1491,8 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int slot_idx, int
 
     REQ_VK(dev.dt.endCommandBuffer(cmd));
 
-    fprintf(stderr, "[UpdateAsync] Submitting to transferQueue slot=%d, signaling transfer_semaphore\n",
-            slot_idx);
+    DEBUG_LOG(config_, "[UpdateAsync] Submitting to transferQueue slot=%d, signaling transfer_semaphore\n",
+              slot_idx);
     
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
@@ -1499,7 +1503,7 @@ bool BatchRenderer::UpdateScenesFromMemory(const uint8_t* ptr, int slot_idx, int
     // Submit to transfer queue, signal semaphore when done
     REQ_VK(dev.dt.queueSubmit(render_context_->transferQueue, 1, &submitInfo, wslot.transfer_fence));
 
-    fprintf(stderr, "[UpdateAsync] FENCE/SEMAPHORE state AFTER submit: "
+    DEBUG_LOG(config_, "[UpdateAsync] FENCE/SEMAPHORE state AFTER submit: "
         "transfer_fence(pending), transfer_semaphore(signaled) slot=%d\n",
         slot_idx);
     // No longer wait idle - render queue will wait on semaphore
@@ -1896,12 +1900,12 @@ bool BatchRenderer::SubmitAndWait(int slot_idx) {
     SwapSlot& slot = swap_slots_[slot_idx];
 
     // ★ LOG: 提交前状态
-    fprintf(stderr, "[SubmitAndWait] ENTER slot=%d frame_counter=%d\n",
-            slot_idx, int(frame_counter_));
+    DEBUG_LOG(config_, "[SubmitAndWait] ENTER slot=%d frame_counter=%d\n",
+              slot_idx, int(frame_counter_));
 
     // ★ LOG: 检查 transfer_semaphore 是否已signal（无法直接查询，但记录提交时间）
-    fprintf(stderr, "[SubmitAndWait] Submitting to renderQueue, waiting on transfer_semaphore slot=%d\n",
-            slot_idx);
+    DEBUG_LOG(config_, "[SubmitAndWait] Submitting to renderQueue, waiting on transfer_semaphore slot=%d\n",
+              slot_idx);
 
     {
         std::lock_guard<std::mutex> lk(swap_mutex_);
@@ -1930,8 +1934,8 @@ bool BatchRenderer::SubmitAndWait(int slot_idx) {
     double submit_ms = std::chrono::duration<double,std::milli>(t1-t0).count();
 
     // ★ LOG: 提交结果（queueSubmit本身很快，如果>10ms说明GPU队列满了）
-    fprintf(stderr, "[SubmitAndWait] queueSubmit result=%d slot=%d took=%.2fms\n",
-            submitResult, slot_idx, submit_ms);
+    DEBUG_LOG(config_, "[SubmitAndWait] queueSubmit result=%d slot=%d took=%.2fms\n",
+              submitResult, slot_idx, submit_ms);
     
     if (submitResult != VK_SUCCESS) {
         fprintf(stderr, "[SubmitAndWait] ERROR: queueSubmit failed=%d slot=%d\n",
@@ -1939,8 +1943,8 @@ bool BatchRenderer::SubmitAndWait(int slot_idx) {
         return false;
     }
 
-    fprintf(stderr, "[SubmitAndWait] SUCCESS slot=%d (GPU rendering async, fence=render_fence)\n",
-            slot_idx);
+    DEBUG_LOG(config_, "[SubmitAndWait] SUCCESS slot=%d (GPU rendering async, fence=render_fence)\n",
+              slot_idx);
 
     return true;
 }
@@ -2938,8 +2942,8 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
 
         // 检查render_fence（FREE状态下应该是signaled）
         VkResult fence_status = dev.dt.getFenceStatus(dev.hdl, wslot.render_fence);
-        fprintf(stderr, "[RecordNextNoWait] target_slot=%d fence_status=%d\n",
-                target_slot, fence_status);
+        DEBUG_LOG(config_, "[RecordNextNoWait] target_slot=%d fence_status=%d\n",
+                  target_slot, fence_status);
 
         VkResult resetRes = dev.dt.resetFences(dev.hdl, 1, &wslot.render_fence);
         if (resetRes != VK_SUCCESS) {
@@ -2950,8 +2954,8 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
 
         wslot.state = SwapSlot::State::RENDERING;
         // ★ 更新 swap_write_idx_ 为实际使用的slot
-        fprintf(stderr, "[RecordNextNoWait] Acquired slot=%d, swap_write_idx_ -> %d\n",
-                target_slot, target_slot);
+        DEBUG_LOG(config_, "[RecordNextNoWait] Acquired slot=%d, swap_write_idx_ -> %d\n",
+                  target_slot, target_slot);
     }
 
     UpdateScenesFromMemory(shm_ptr, target_slot, 0, max_geom, max_light);
@@ -2959,7 +2963,7 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
     // 后续录制逻辑使用 target_slot
     SwapSlot& wslot = swap_slots_[target_slot];
 
-    fprintf(stderr, "[RecordNextNoWait] Beginning command recording slot=%d\n", target_slot);
+    DEBUG_LOG(config_, "[RecordNextNoWait] Beginning command recording slot=%d\n", target_slot);
     
     REQ_VK(dev.dt.resetCommandBuffer(wslot.render_cmd, 0));
     VkCommandBuffer cmd = wslot.render_cmd;
@@ -3038,7 +3042,7 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
             }
         }
         dev.dt.cmdEndRenderPass(cmd);
-        fprintf(stderr, "[RecordNextNoWait] ShadowPass recorded slot=%d\n", target_slot);
+        DEBUG_LOG(config_, "[RecordNextNoWait] ShadowPass recorded slot=%d\n", target_slot);
     
     }
 
@@ -3064,8 +3068,8 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
         // STEP C: MAIN RENDER PASS (Single Atlas Pass)
         // =========================================================================
         {
-            fprintf(stderr, "[RecordNextNoWait] Recording MainPass slot=%d total_views=%d\n",
-            target_slot, config_.batch_size * SHM_NUM_CAMERAS);
+            DEBUG_LOG(config_, "[RecordNextNoWait] Recording MainPass slot=%d total_views=%d\n",
+                      target_slot, config_.batch_size * SHM_NUM_CAMERAS);
 
             ScopeTimer t(profiler_, "2. Record_CommandBuffers.MainPass");
             // 1. Calculate Main Atlas Layout
@@ -3256,12 +3260,12 @@ int BatchRenderer::RecordNextNoWait(const uint8_t* shm_ptr, int max_geom, int ma
             }
             dev.dt.cmdEndRenderPass(cmd);
 
-            fprintf(stderr, "[RecordNextNoWait] MainPass recorded slot=%d\n", target_slot);
+            DEBUG_LOG(config_, "[RecordNextNoWait] MainPass recorded slot=%d\n", target_slot);
     
         }
     REQ_VK(dev.dt.endCommandBuffer(cmd));
 
-    fprintf(stderr, "[RecordNextNoWait] DONE target_slot=%d\n", target_slot);
+    DEBUG_LOG(config_, "[RecordNextNoWait] DONE target_slot=%d\n", target_slot);
     
     
     return target_slot;
@@ -3291,8 +3295,8 @@ bool BatchRenderer::IsSlotReady(int slot_idx) {
 
 bool BatchRenderer::SubmitNext(int slot_idx) {
 
-    fprintf(stderr, "[SubmitNext] ENTER swap_write_idx_=%d frame_counter=%d\n",
-            slot_idx, int(frame_counter_));
+    DEBUG_LOG(config_, "[SubmitNext] ENTER swap_write_idx_=%d frame_counter=%d\n",
+              slot_idx, int(frame_counter_));
 
     if (!SubmitAndWait(slot_idx)) {
         return false;
@@ -3303,13 +3307,13 @@ bool BatchRenderer::SubmitNext(int slot_idx) {
     {
         std::lock_guard<std::mutex> lk(swap_mutex_);
         swap_slots_[slot_idx].readback_submitted = false;
-        fprintf(stderr, "[SubmitNext] slot=%d readback_submitted=false\n", slot_idx);
+        DEBUG_LOG(config_, "[SubmitNext] slot=%d readback_submitted=false\n", slot_idx);
  
     }
 
     frame_counter_++;
-    fprintf(stderr, "[SubmitNext] Done. frame_counter=%d, next slot to be chosen by RecordNextNoWait\n",
-            int(frame_counter_));
+    DEBUG_LOG(config_, "[SubmitNext] Done. frame_counter=%d, next slot to be chosen by RecordNextNoWait\n",
+              int(frame_counter_));
 
     return true;
 }
@@ -3377,9 +3381,9 @@ void BatchRenderer::CopyFrameFromStaging(int slot_idx, int resource_idx,
     for (int i = 0; i < 64; i++) {
         if (src[i] != 0) { all_zero = false; break; }
     }
-    printf("[CopyFrame] slot=%d res=%d all_zero=%d first_bytes=[%d,%d,%d,%d]\n",
-           slot_idx, resource_idx, all_zero,
-           src[0], src[1], src[2], src[3]);
+    DEBUG_LOG(config_, "[CopyFrame] slot=%d res=%d all_zero=%d first_bytes=[%d,%d,%d,%d]\n",
+              slot_idx, resource_idx, all_zero,
+              src[0], src[1], src[2], src[3]);
     
     std::memcpy(dst, src, size);
 }
@@ -3389,10 +3393,10 @@ bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
     Device &dev = *device_;
     SwapSlot& slot = swap_slots_[swap_idx];
 
-    fprintf(stderr, "[SubmitReadbackAsync] ENTER swap_idx=%d step_id=%d\n", swap_idx, step_id);
+    DEBUG_LOG(config_, "[SubmitReadbackAsync] ENTER swap_idx=%d step_id=%d\n", swap_idx, step_id);
     VkResult rb_fence_status = dev.dt.getFenceStatus(dev.hdl, slot.readback_fence);
-    fprintf(stderr, "[SubmitReadbackAsync] readback_fence status before reset=%d slot=%d\n",
-            rb_fence_status, swap_idx);
+    DEBUG_LOG(config_, "[SubmitReadbackAsync] readback_fence status before reset=%d slot=%d\n",
+              rb_fence_status, swap_idx);
 
     REQ_VK(dev.dt.resetFences(dev.hdl, 1, &slot.readback_fence));
 
@@ -3456,7 +3460,7 @@ bool BatchRenderer::SubmitReadbackAsync(int swap_idx, int step_id) {
 }
 
 void BatchRenderer::ReadbackThreadFn() {
-    fprintf(stderr, "[ReadbackThread] Thread started, SWAP_COUNT=%d\n", SWAP_COUNT);
+    DEBUG_LOG(config_, "[ReadbackThread] Thread started, SWAP_COUNT=%d\n", SWAP_COUNT);
 
 
     while (readback_running_) {
@@ -3482,7 +3486,7 @@ void BatchRenderer::ReadbackThreadFn() {
                         }
                     }
                     if (!already) {
-                        fprintf(stderr, "[ReadbackThread] slot=%d RENDERING->READBACK_PENDING, submitting blit\n", s);
+                        DEBUG_LOG(config_, "[ReadbackThread] slot=%d RENDERING->READBACK_PENDING, submitting blit\n", s);
                         SubmitReadbackAsync(s, slot.step_id);
                     }
                 }
@@ -3500,7 +3504,7 @@ void BatchRenderer::ReadbackThreadFn() {
                 continue;
             }
 
-            fprintf(stderr, "[ReadbackThread] slot=%d readback_fence SIGNALED, invalidating memory\n", s);
+            DEBUG_LOG(config_, "[ReadbackThread] slot=%d readback_fence SIGNALED, invalidating memory\n", s);
             
 
             int total_views = config_.batch_size * SHM_NUM_CAMERAS;
@@ -3514,8 +3518,8 @@ void BatchRenderer::ReadbackThreadFn() {
             device_->dt.invalidateMappedMemoryRanges(
                 device_->hdl, (uint32_t)ranges.size(), ranges.data());
 
-            fprintf(stderr, "[ReadbackThread] slot=%d calling readback_callback step_id=%d total_views=%d\n",
-                    s, slot.step_id, total_views);
+            DEBUG_LOG(config_, "[ReadbackThread] slot=%d calling readback_callback step_id=%d total_views=%d\n",
+                      s, slot.step_id, total_views);
 
             std::vector<FrameObservation> obs(total_views);
             for (int i = 0; i < total_views; ++i) {
@@ -3538,14 +3542,14 @@ void BatchRenderer::ReadbackThreadFn() {
                 slot.readback_submitted = false;
             }
             swap_cv_.notify_all();
-            fprintf(stderr, "[ReadbackThread] slot=%d -> FREE, notify_all\n", s);
+            DEBUG_LOG(config_, "[ReadbackThread] slot=%d -> FREE, notify_all\n", s);
       
         }
         if (!readback_running_) return;
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 
-    fprintf(stderr, "[ReadbackThread] Thread exiting\n");
+    DEBUG_LOG(config_, "[ReadbackThread] Thread exiting\n");
 }
 
 void BatchRenderer::StartReadbackThread() {
@@ -3555,7 +3559,7 @@ void BatchRenderer::StartReadbackThread() {
 
 void BatchRenderer::StopReadbackThread() {
     readback_running_ = false;
-    fprintf(stderr, "[StopReadbackThread] trigger!!\n");
+    DEBUG_LOG(config_, "[StopReadbackThread] trigger!!\n");
     if (readback_thread_.joinable()) {
         readback_thread_.join();
     }
@@ -3571,7 +3575,3 @@ const unsigned char* BatchRenderer::GetRGBFrame(int batch_idx) const {
 const float* BatchRenderer::GetDepthFrame(int batch_idx) const {
     return nullptr;
 }
-
-
-
-

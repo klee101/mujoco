@@ -1,96 +1,201 @@
-## Vulkan/Mujoco 项目环境配置与 Benchmark 流程
+## mjbatch
 
-### I. 环境配置与依赖准备
+`mjbatch` 是 MuJoCo 的 Vulkan batch renderer 实验模块，提供 Python 模块 `mjb`，用于从 shared memory 中读取 robosuite 写入的场景数据，并通过异步 GPU 渲染和异步 readback 获得批量图像结果。
 
-#### 1\. Vulkan SDK 下载与配置
+### 目录说明
 
-下载 Vulkan SDK **1.4.328.1** 版本。
-wget https://sdk.lunarg.com/sdk/download/1.4.328.1/linux/vulkansdk-linux-x86_64-1.4.328.1.tar.xz
-tar -xJf vulkansdk-linux-x86_64-1.4.328.1.tar.xz
-
-**配置 `$HOME/.bashrc`：**
-将以下环境变量添加到您的 shell 配置文件（例如 `~/.bashrc`），然后运行 `source ~/.bashrc` 使其生效。
-
-```bash
-export VULKAN_SDK=~/vulkan/1.4.328.1/x86_64
-export PATH=$VULKAN_SDK/bin:$PATH
-export LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH
-export VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
-export PKG_CONFIG_PATH=$VULKAN_SDK/lib/pkgconfig:$PKG_CONFIG_PATH
+```text
+mjbatch/
+  examples/mjb_async_pipeline.py   # 推荐的 mjb 接入范式
+  scripts/build.sh                 # 一键配置和构建脚本
+  tests/test_readback.py           # benchmark / stress test
+  tests/benchmark.sh               # benchmark 运行脚本
+  tests/verify_shm.py              # shared-memory binder 检查脚本
 ```
 
-#### 2\. Submodule 更新
+### 环境要求
 
-在项目根目录 (`/mujoco`) 下执行命令，拉取并初始化所有子模块依赖：
+1. Vulkan SDK
+
+当前开发环境使用 Vulkan SDK `1.4.328.1`。请确保 `VULKAN_SDK`、`PATH`、`LD_LIBRARY_PATH`、`VK_LAYER_PATH` 和 `PKG_CONFIG_PATH` 已正确配置。
+
+2. 子模块
+
+在仓库根目录执行：
 
 ```bash
 git submodule update --init --recursive
 ```
 
-#### 3\. 依赖库手动处理
+3. DXC
 
-由于网络和编译环境限制，部分外部依赖需要手动下载或解压。
-
-  * **DXC 库解压 (.so):**
-    将下载的 DXC 压缩包解压，确保动态链接库（`.so` 文件）可用。
-
-    ```bash
-    tar zxvf linux_dxc_2025_07_14.x86_64.tar.gz 
-    ```
-
-#### 4\. GLFW/图形后端配置
-
-根据您的设备环境（服务器只有 X11），需要在 CMake 配置中**显式禁用 Wayland** 支持，只使用 X11 后端。
-
-  * **重要设置：** 确保在配置时传入以下选项：
-    ```
-    -DGLFW_BUILD_WAYLAND=OFF
-    -DGLFW_BUILD_X11=OFF
-    ```
-
-### II. Benchmark 构建与编译
-
-本项目采用编译优化选项，以确保 Benchmark 的最高性能。
-
-#### 1\. CMake 配置项目
-
-在项目构建目录（`/build`）下执行以下命令进行 CMake 配置：
+确认 DXC 可执行文件存在：
 
 ```bash
-cmake -S .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-    -DMUJOCO_ENABLE_AVX=ON \
-    -DMUJOCO_ENABLE_AVX_INTRINSICS=ON \
-    -DGLFW_BUILD_WAYLAND=OFF \
-    -DGLFW_BUILD_X11=OFF \
-    -DCMAKE_CXX_FLAGS="-march=native -O3 -funroll-loops" \
-    -DPython3_EXECUTABLE=$(which python) \
-    -DCMAKE_C_COMPILER=gcc-11 \
-    -DCMAKE_CXX_COMPILER=g++-11
-
-// if need debug
-cmake ..     -DPython3_EXECUTABLE=$(which python) -DCMAKE_BUILD_TYPE=Debug
-
-// if use gcc11, add
-    -DCMAKE_C_COMPILER=gcc-11 
-    -DCMAKE_CXX_COMPILER=g++-11
-
+ls mjbatch/dxc/bin/dxc
 ```
 
-> **提示:** `-march=native` 会针对当前机器的 CPU 架构进行最大优化。
+如果 DXC 是手动下载的压缩包，先在 `mjbatch/dxc` 目录下解压。
 
-#### 2\. 编译目标
+4. robosuite
 
-Vulkan 程序的运行依赖于 **Shader SPV 文件**。这里通过 `CompileShaders` 目标自动编译并生成这些文件。
+Python 示例和 benchmark 依赖 robosuite 侧写入 shared memory 的实现。这部分在自定义 robosuite 中，不在普通上游 robosuite 中。
 
-进入构建目录并执行编译：
+自定义仓库地址：
+
+```text
+git@github.com:klee101/robosuite
+```
+
+5. Python 包版本
+
+MuJoCo Python 包要求：
+
+```text
+mujoco==3.3.7
+```
+
+### 快速开始
+
+激活虚拟环境，在仓库根目录执行：
 
 ```bash
-cd /path/to/mujoco
-# 编译 C++ mujoco lib
-cmake --build build --config Release --target mjb --parallel
-
-# 编译 Shaders（生成 .spv 文件）
-cmake --build build --config Release --target CompileShaders --parallel
+./mjbatch/scripts/build.sh
+python mjbatch/examples/mjb_async_pipeline.py --num-envs 4 --steps 20
 ```
+
+`build.sh` 默认执行 Release 配置，并构建：
+
+```text
+mjb
+CompileShaders
+```
+
+### 构建
+
+默认构建：
+
+```bash
+./mjbatch/scripts/build.sh
+```
+
+Debug 构建：
+
+```bash
+./mjbatch/scripts/build.sh --debug
+```
+
+只构建指定目标：
+
+```bash
+./mjbatch/scripts/build.sh --target mjb
+./mjbatch/scripts/build.sh --target CompileShaders
+./mjbatch/scripts/build.sh --target test_shm_ext
+```
+
+覆盖构建目录、Python 或编译器：
+
+```bash
+BUILD_DIR=/tmp/mujoco-build \
+PYTHON_EXECUTABLE=$(which python) \
+C_COMPILER=gcc-11 \
+CXX_COMPILER=g++-11 \
+./mjbatch/scripts/build.sh
+```
+
+传入额外 CMake 参数：
+
+```bash
+EXTRA_CMAKE_ARGS="-DGLFW_BUILD_X11=ON" ./mjbatch/scripts/build.sh
+```
+
+查看脚本选项：
+
+```bash
+./mjbatch/scripts/build.sh --help
+```
+
+### mjb 接入范式
+
+推荐从这个示例开始。首先激活虚拟环境：
+
+```bash
+mjbatch/examples/mjb_async_pipeline.py
+```
+
+它展示的是应用接入 `mjb` 的标准流程，而不是 benchmark：
+
+1. 创建 `BatchRendererConfig`
+2. 构造 `BatchRenderer`
+3. 启动 `start_readback_thread()`
+4. 设置 `set_readback_callback()`
+5. 调用 `record_next_nowait(shm_ptr, max_geoms, max_lights)` 录制下一帧
+6. 调用 `submit_next(slot)` 提交 GPU work
+7. 用 `is_slot_ready(slot)` 非阻塞轮询 GPU 完成
+8. 在 shutdown 时停止 readback thread
+
+运行示例：
+
+```bash
+python mjbatch/examples/mjb_async_pipeline.py --num-envs 4 --steps 20
+```
+
+如果回调中的图像需要在 callback 返回后继续使用，需要在 callback 内复制 frame 数据。
+
+默认情况下，`mjb` 会关闭 C++ 侧的流水线调试日志。需要排查 slot、submit 或 readback 状态时，可以打开：
+
+```bash
+python mjbatch/examples/mjb_async_pipeline.py --debug-mjb
+```
+
+在代码中对应配置是：
+
+```python
+renderer_cfg.debug_logging = True
+```
+
+### Benchmark
+
+`mjbatch/tests/test_readback.py` 保留为 benchmark / stress test，不作为接口范式使用。它包含更重的统计、日志和可视化逻辑。
+
+运行 benchmark：
+
+```bash
+./mjbatch/tests/benchmark.sh
+```
+
+直接运行 benchmark 并打开 C++ 侧调试日志：
+
+```bash
+python mjbatch/tests/test_readback.py --debug_mjb
+```
+
+日志默认写入：
+
+```text
+mjbatch/tests/debug_logs/
+```
+
+### 常见问题
+
+1. `import mjb` 失败
+
+先构建 `mjb`：
+
+```bash
+./mjbatch/scripts/build.sh --target mjb
+```
+
+示例脚本默认从 `build/lib` 加载 `mjb`。
+
+2. robosuite 找不到 shared-memory 相关参数或接口
+
+确认当前 Python 环境使用的是自定义 robosuite：
+
+```text
+git@github.com:klee101/robosuite
+```
+
+3. MuJoCo 版本不一致
+
+确认 Python 环境中使用 `mujoco==3.3.7`。

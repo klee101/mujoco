@@ -708,6 +708,8 @@ def parse_args():
     p.add_argument("--plot",        action="store_true",
                    help="Generate timeline & architecture plots")
     p.add_argument("--output_dir",  type=str,  default="")
+    p.add_argument("--debug_mjb",   action="store_true",
+                   help="Enable verbose C++ mjb pipeline logging")
     return p.parse_args()
 
 
@@ -803,6 +805,7 @@ def main():
     mjb_cfg.frame_width  = FRAME_W
     mjb_cfg.frame_height = FRAME_H
     mjb_cfg.gpu_id       = 0
+    mjb_cfg.debug_logging = args.debug_mjb
     renderer = mjb.BatchRenderer(model_ptrs, mjb_cfg)
     renderer.start_readback_thread()
 

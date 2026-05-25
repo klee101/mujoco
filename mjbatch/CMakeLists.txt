@@ -178,20 +178,6 @@ add_dependencies(renderer generate_dispatch)
 set(DXC_EXECUTABLE "${CMAKE_SOURCE_DIR}/mjbatch/dxc/bin/dxc")
 add_subdirectory(shaders)
 
-add_executable(mjbatch_smoke tests/smoke_test_main.cc)
-target_compile_options(mjbatch_smoke PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(
-    mjbatch_smoke
-    renderer
-)
-
-add_executable(benchmark_test tests/benchmark_test.cc)
-target_compile_options(benchmark_test PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(
-    benchmark_test
-    renderer
-)
-
 # ==============================================================================
 # 2. 独立引入 Pybind11 (最小修改量，使用标准 FetchContent)
 # ==============================================================================
@@ -226,4 +212,3 @@ target_compile_options(mjb PRIVATE ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
 target_link_libraries(mjb PRIVATE renderer mujoco::mujoco)
 
 set_target_properties(mjb PROPERTIES PREFIX "" SUFFIX ".so")
-

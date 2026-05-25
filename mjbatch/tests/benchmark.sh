@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 WIDTH=1024
 HEIGHT=1024
@@ -7,7 +10,7 @@ COLD_START=5
 
 ENVS=(8)
 
-LOG_DIR="debug_logs"
+LOG_DIR="${SCRIPT_DIR}/debug_logs"
 mkdir -p "$LOG_DIR"
 
 for NUM in "${ENVS[@]}"
@@ -21,7 +24,7 @@ do
     echo "--------------------------------------------------------"
 
     # stdout + stderr 同时写文件，同时显示在终端（tee）
-    python test_readback.py \
+    python "${SCRIPT_DIR}/test_readback.py" \
         --num_envs "$NUM" \
         --width "$WIDTH" \
         --height "$HEIGHT" \

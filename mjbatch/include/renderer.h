@@ -197,6 +197,7 @@ struct BatchRendererConfig {
     int max_frames_in_flight = 1;
 
     // Logging
+    bool debug_logging = false;
     std::function<void(const std::string&)> log_callback = nullptr;
 };
 
@@ -605,5 +606,4 @@ private:
 
     ThreadPool pool;
 };
-
 

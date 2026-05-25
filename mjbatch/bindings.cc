@@ -13,7 +13,8 @@ PYBIND11_MODULE(mjb, m) {
         .def_readwrite("frame_width", &BatchRendererConfig::frame_width)
         .def_readwrite("frame_height", &BatchRendererConfig::frame_height)
         .def_readwrite("gpu_id", &BatchRendererConfig::gpu_id)
-        .def_readwrite("enable_validation", &BatchRendererConfig::enable_validation);
+        .def_readwrite("enable_validation", &BatchRendererConfig::enable_validation)
+        .def_readwrite("debug_logging", &BatchRendererConfig::debug_logging);
 
     // Expose Renderer
     py::class_<BatchRenderer>(m, "BatchRenderer")
